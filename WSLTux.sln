@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.2.32519.379
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WSLTux", "WSLTux\WSLTux.vcxproj", "{7E7B92BE-580D-43A0-B671-2E881E014DAC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Debug|x64.ActiveCfg = Debug|x64
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Debug|x64.Build.0 = Debug|x64
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Debug|x86.ActiveCfg = Debug|Win32
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Debug|x86.Build.0 = Debug|Win32
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Release|x64.ActiveCfg = Release|x64
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Release|x64.Build.0 = Release|x64
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Release|x86.ActiveCfg = Release|Win32
+		{7E7B92BE-580D-43A0-B671-2E881E014DAC}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {609942D4-39B0-4809-B46B-6855CB55774E}
+	EndGlobalSection
+EndGlobal
