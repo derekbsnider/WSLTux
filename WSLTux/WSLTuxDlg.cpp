@@ -7,20 +7,21 @@
 //		 also, we should poll the distributions periodically to see if they are active
 //
 
+
 #include "pch.h"
 #include "framework.h"
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include "WSLTux.h"
 #include "WSLTuxDlg.h"
 #include "afxdialogex.h"
 #include "wslapi.h"
-#include <fstream>
-#include <sstream>
-#include <string>
 #include <io.h>
 #include "console_pipe.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <vector>
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -72,6 +73,7 @@ CWSLTuxDlg::CWSLTuxDlg(CWnd* pParent /*=nullptr*/)
 	: CDialogEx(IDD_WSLTUX_DIALOG, pParent)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
+	m_hIcon_disabled = AfxGetApp()->LoadIcon(IDI_TUXDISABLED);
 }
 
 void CWSLTuxDlg::DoDataExchange(CDataExchange* pDX)
@@ -121,11 +123,70 @@ void getColumns(std::vector<CString>& columns, CString& cstr)
 
 // CWSLTuxDlg message handlers
 
+
+bool CWSLTuxDlg::GetWSLInfo()
+{
+	FILE* pPipe;
+
+	// WSL.EXE outputs nulls for some strange reason
+	// read the output from wsl.exe into a listbox
+	if (!(pPipe = _popen("\\Windows\\System32\\wsl.exe -l -v", "rb")))
+		return false;
+
+	CString cstr = _T(""), ctmp;
+	CString dbgmsg;
+	int ch, col, ofs, i = 0;
+	std::vector<CString>::iterator vsi, vsj;
+
+	wslinfo.rows = 0;
+	wslinfo.num_running = 0;
+
+	while ((ch = getc(pPipe)) != EOF)
+	{
+		switch (ch)
+		{
+		case '\0': break;
+		case '\n':
+		case '\r':
+			if (cstr.GetLength() > 0)
+			{
+				if (wslinfo.columns.empty())
+				{
+					getColumns(wslinfo.columns, cstr);
+					cstr = _T("");
+					continue;
+				}
+
+				for (col = 0, ofs = 0, vsi = wslinfo.columns.begin(); vsi != wslinfo.columns.end(); ++vsi)
+				{
+					ctmp = cstr.Mid(ofs, vsi->GetLength());
+					ctmp = ctmp.Trim();
+					if (vsi->Left(5).CompareNoCase(_T("STATE")) == 0
+					&&  ctmp.CompareNoCase(_T("Running")) == 0)
+						++wslinfo.num_running;
+					dbgmsg.Format(_T("VSI: %s  ctmp: %s nrunning: %d\n"), *vsi, ctmp, wslinfo.num_running);
+					OutputDebugString(dbgmsg);
+					wslinfo.vcol[col++].push_back(ctmp);
+					ofs += vsi->GetLength();
+				}
+				cstr = _T("");
+				++wslinfo.rows;
+			}
+			break;
+		default:
+			cstr += (char)ch;
+		}
+	}
+
+	_pclose(pPipe);
+
+	return wslinfo.rows > 0 ? true : false;
+}
+
+
 BOOL CWSLTuxDlg::OnInitDialog()
 {
 	CDialogEx::OnInitDialog();
-
-	AddIconToSysTray();
 
 	// Add "About..." menu item to system menu.
 
@@ -158,70 +219,33 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
 	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
 
-	FILE* pPipe;
-
-	// WSL.EXE outputs nulls for some strange reason
-	// read the output from wsl.exe into a listbox
-	if ((pPipe = _popen("\\Windows\\System32\\wsl.exe -l -v", "rb")))
+	if ( GetWSLInfo() )
 	{
 		CString cstr = _T(""), ctmp;
-		int ch, col, ofs, rows = 0, i = 0;
+		int col, i = 0;
 		std::vector<CString>::iterator vsi, vsj;
-		std::vector<CString> columns;
-		std::vector<CString> vcol[10];
 		int nIndex;
 
-		while ((ch = getc(pPipe)) != EOF)
+		for (i = 0; i < wslinfo.rows; ++i)
 		{
-			switch (ch)
-			{
-			case '\0': break;
-			case '\n':
-			case '\r':
-				if (cstr.GetLength() > 0)
-				{
-					if (columns.empty())
-					{
-						getColumns(columns, cstr);
-						cstr = _T("");
-						continue;
-					}
-
-					for (col = 0, ofs = 0, vsi = columns.begin(); vsi != columns.end(); ++vsi)
-					{
-						ctmp = cstr.Mid(ofs,vsi->GetLength());
-						ctmp = ctmp.Trim();
-						vcol[col++].push_back(ctmp);
-						ofs += vsi->GetLength();
-					}
-					cstr = _T("");
-					++rows;
-				}
-				break;
-			default:
-				cstr += (char)ch;
-			}
-		}
-		_pclose(pPipe);
-
-		for (i = 0; i < rows; ++i)
-		{
-			vsj = vcol[0].begin();
-			if (vsj == vcol[0].end())
+			vsj = wslinfo.vcol[0].begin();
+			if (vsj == wslinfo.vcol[0].end())
 				break;
 			nIndex = m_WSLlistCtrl.InsertItem(i, *vsj);
-			vcol[0].erase(vsj);
-			for (col = 1, vsi = columns.begin()+1; vsi != columns.end(); ++vsi)
+			wslinfo.vcol[0].erase(vsj);
+			for (col = 1, vsi = wslinfo.columns.begin()+1; vsi != wslinfo.columns.end(); ++vsi)
 			{
-				vsj = vcol[col].begin();
-				if (vsj == vcol[col].end())
+				vsj = wslinfo.vcol[col].begin();
+				if (vsj == wslinfo.vcol[col].end())
 					continue;
 				m_WSLlistCtrl.SetItemText(nIndex, col, *vsj);
-				vcol[col].erase(vsj);
+				wslinfo.vcol[col].erase(vsj);
 				++col;
 			}
 		}
 	}
+
+	AddIconToSysTray();
 
 //	int nIndex = m_WSLlistCtrl.InsertItem(i++, _T(""));
 //	m_WSLlistCtrl.SetItemText(nIndex, 1, cstr);
@@ -304,7 +328,10 @@ void CWSLTuxDlg::AddIconToSysTray()
 
 	//on main function:
 	NID.cbSize = sizeof(NID);
-	NID.hIcon = this->m_hIcon;
+	if (wslinfo.num_running)
+		NID.hIcon = this->m_hIcon;
+	else
+		NID.hIcon = this->m_hIcon_disabled;
 
 	NID.hWnd = this->m_hWnd;
 	NID.uID = WM_TRAY_ID;
@@ -360,11 +387,12 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 
 	UINT uMsg = (UINT)lParam;
 	const int IDM_EXIT = 100;
+#if 0
 	CString dbgmsg;
 
 	dbgmsg.Format(_T("OnTrayNotify(%d, %d)\n"), (UINT)wParam, (UINT)lParam);
 	OutputDebugString(dbgmsg);
-
+#endif
 	switch (uMsg)
 	{
 		case WM_LBUTTONDOWN:

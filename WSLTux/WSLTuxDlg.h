@@ -4,6 +4,17 @@
 
 #pragma once
 
+#include <vector>
+
+class WSLInfo
+{
+public:
+	int rows;
+	int num_running;
+	std::vector<CString> columns;
+	std::vector<CString> vcol[10];
+};
+
 // CWSLTuxDlg dialog
 class CWSLTuxDlg : public CDialogEx
 {
@@ -23,6 +34,8 @@ public:
 // Implementation
 protected:
 	HICON m_hIcon;
+	HICON m_hIcon_disabled;
+	WSLInfo wslinfo;
 
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
@@ -33,6 +46,7 @@ protected:
 public:
 	CListCtrl m_WSLlistCtrl;
 	afx_msg void OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult);
+	bool GetWSLInfo();
 	void AddIconToSysTray();
 	void RemIconFromSysTray();
 	void Shutdown();

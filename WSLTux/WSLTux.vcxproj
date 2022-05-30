@@ -207,6 +207,8 @@
     <None Include="res\WSLTux.rc2" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="res\icon1.ico" />
+    <Image Include="res\TuxDisabled.ico" />
     <Image Include="res\WSLTux.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
