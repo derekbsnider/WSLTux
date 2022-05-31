@@ -62,6 +62,9 @@ public:
 	void UpdateSysTrayIcon();
 	void RemIconFromSysTray();
 	void Shutdown();
+	void StopTimer();
+	void StartTimer();
+	void RestartTimer();
 	CString WSLstopDistribution(CString& distro);
 	CString WSLstartDistribution(CString& distro);
 

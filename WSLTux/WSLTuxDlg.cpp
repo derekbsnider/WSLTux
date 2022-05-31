@@ -141,6 +141,7 @@ void WSLInfo::clear()
 
 HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 {
+	StopTimer();
 	STARTUPINFO si;
 	PROCESS_INFORMATION pi;
 	SECURITY_ATTRIBUTES saAttr;
@@ -158,6 +159,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	if (!CreatePipe(&m_hChildStd_OUT_Rd, &m_hChildStd_OUT_Wr, &saAttr, 0))
 	{
 		// log error
+		StartTimer();
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
@@ -166,6 +168,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	if (!SetHandleInformation(m_hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0))
 	{
 		// log error
+		StartTimer();
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
@@ -192,7 +195,8 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 		&pi)						// Pointer to PROCESS_INFORMATION structure
 		)
 	{
-		AfxMessageBox(_T("Failed to create child process"));
+		AfxMessageBox(_T("Error: Failed to create child process"));
+		StartTimer();
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
@@ -215,6 +219,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	}
 
 	CloseHandle(m_hChildStd_OUT_Rd);
+	StartTimer();
 
 	return S_OK;
 }
@@ -306,7 +311,11 @@ bool CWSLTuxDlg::GetWSLInfo()
 		}
 	}
 
-	return wslinfo.rows > 0 ? true : false;
+	if (!wslinfo.rows)
+		return false;
+
+	StartTimer();
+	return true;
 }
 
 void CWSLTuxDlg::PopulateWSLlist()
@@ -335,6 +344,24 @@ void CWSLTuxDlg::PopulateWSLlist()
 			++col;
 		}
 	}
+}
+
+void CWSLTuxDlg::StopTimer()
+{
+	if (m_minuteTimer)
+		KillTimer(m_minuteTimer);
+}
+
+void CWSLTuxDlg::StartTimer()
+{
+	if ( wslinfo.rows )
+		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
+}
+
+void CWSLTuxDlg::RestartTimer()
+{
+	StopTimer();
+	StartTimer();
 }
 
 BOOL CWSLTuxDlg::OnInitDialog()
@@ -372,10 +399,10 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
 	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
 
-	if (GetWSLInfo())
+	if (GetWSLInfo() && wslinfo.rows)
 	{
 		PopulateWSLlist();
-		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
+		StartTimer();
 	}
 
 	AddIconToSysTray();
@@ -448,11 +475,14 @@ void CWSLTuxDlg::OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult)
 	*pResult = 0;
 	CWnd* label = GetDlgItem(IDC_STATIC2);
 	label->SetWindowTextW(msg);
+	if (wslinfo.rows)
+		RestartTimer();
 }
 
 void CWSLTuxDlg::AddIconToSysTray()
 {
 	NOTIFYICONDATA NID;
+	std::wstringstream oss;
 
 	memset(&NID, 0, sizeof(NID));
 
@@ -465,7 +495,12 @@ void CWSLTuxDlg::AddIconToSysTray()
 
 	NID.hWnd = this->m_hWnd;
 	NID.uID = WM_TRAY_ID;
-	StrCpyW(NID.szTip, L"WSL Tux");
+	if (wslinfo.num_running == 1)
+		oss << "1 distribution running";
+	else
+		oss << wslinfo.num_running << " distributions running";
+
+	wcscpy_s(NID.szTip, oss.str().c_str());
 	NID.uCallbackMessage = WM_TRAY_MESSAGE;
 	//in a timer:
 
@@ -478,6 +513,7 @@ void CWSLTuxDlg::AddIconToSysTray()
 void CWSLTuxDlg::UpdateSysTrayIcon()
 {
 	NOTIFYICONDATA NID;
+	std::wstringstream oss;
 
 	memset(&NID, 0, sizeof(NID));
 
@@ -489,7 +525,13 @@ void CWSLTuxDlg::UpdateSysTrayIcon()
 
 	NID.hWnd = this->m_hWnd;
 	NID.uID = WM_TRAY_ID;
-	StrCpyW(NID.szTip, L"WSL Tux");
+	if (wslinfo.num_running == 1)
+		oss << "1 distribution running";
+	else
+		oss << wslinfo.num_running << " distributions running";
+
+	wcscpy_s(NID.szTip, oss.str().c_str());
+
 	NID.uCallbackMessage = WM_TRAY_MESSAGE;
 
 	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
