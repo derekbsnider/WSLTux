@@ -20,7 +20,7 @@ This application does not display or contain links to third party websites.
 
 ## Security
 
-The security of your personal information is important to us, but remember that no application can guarantee that it could not be abused or used as a vector of abuse from other application or malicious users. This software is provided "as is", and the source code is freely available for security evaluation.
+The security of your personal information is important to us, but remember that no application can guarantee that it could not be abused or used as a vector of abuse from other applications or malicious users. This software is provided "as is", and the source code is freely available for security evaluation.
 
 
 ## Changes To This Privacy Policy
