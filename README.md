@@ -1,4 +1,4 @@
-# WSLTux
+# WSLTux (c)2022 Derek Snider
 
 This is a Windows 10/11 system tray app to monitor and control your Windows Subsystem for Linux distributions. It gives a visual indication that a WSL distribution is active (or that none are active).
 
