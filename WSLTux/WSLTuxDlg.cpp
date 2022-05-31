@@ -3,8 +3,7 @@
 // 
 // WSL Tux is a system tray application to let you know that WSL is running by placing a Tux icon in the system tray
 // 
-// TODO: if no WSL distributions are active, then we should display a "grayed out" Tux icon
-//		 also, we should poll the distributions periodically to see if they are active
+// (c)2022 Derek Snider (DSD Software)
 //
 
 
@@ -29,7 +28,9 @@
 
 #define WM_TRAY_ID (WM_USER + 0x2)
 #define WM_TRAY_MESSAGE (WM_USER + 0x100)
+#define IDT_MINUTE_TIMER (WM_USER + 0x200)
 
+#define TIMER_INTERVAL 60000
 
 // CAboutDlg dialog used for App About
 
@@ -82,6 +83,8 @@ void CWSLTuxDlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_LIST1, m_WSLlistCtrl);
 }
 
+#pragma warning( push )
+#pragma warning( disable : 26454 )
 BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 	ON_WM_SYSCOMMAND()
 	ON_WM_PAINT()
@@ -91,7 +94,11 @@ BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 	ON_MESSAGE(WM_TRAY_MESSAGE, OnTrayNotify)
 	ON_BN_CLICKED(IDCANCEL, &CWSLTuxDlg::OnBnClickedCancel)
 	ON_WM_CLOSE()
+	ON_BN_CLICKED(IDC_STOP, &CWSLTuxDlg::OnBnClickedStop)
+	ON_BN_CLICKED(IDC_START, &CWSLTuxDlg::OnBnClickedStart)
+	ON_WM_TIMER()
 END_MESSAGE_MAP()
+#pragma warning( pop )
 
 void getColumns(std::vector<CString>& columns, CString& cstr)
 {
@@ -121,27 +128,149 @@ void getColumns(std::vector<CString>& columns, CString& cstr)
 }
 
 
-// CWSLTuxDlg message handlers
+void WSLInfo::clear()
+{
+	rows = 0;
+	num_running = 0;
+	columns.clear();
+	for (int i = 0; i < 10; ++i)
+		vcol[i].clear();
+}
 
+
+
+HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
+{
+	STARTUPINFO si;
+	PROCESS_INFORMATION pi;
+	SECURITY_ATTRIBUTES saAttr;
+	std::string cmdline = CT2CA(cmd);
+	DWORD dwExitCode = 0;
+	DWORD timeout = 30000;
+
+	ZeroMemory(&saAttr, sizeof(saAttr));
+	saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+	saAttr.bInheritHandle = TRUE;
+	saAttr.lpSecurityDescriptor = NULL;
+
+	// Create a pipe for the child process's STDOUT. 
+
+	if (!CreatePipe(&m_hChildStd_OUT_Rd, &m_hChildStd_OUT_Wr, &saAttr, 0))
+	{
+		// log error
+		return HRESULT_FROM_WIN32(GetLastError());
+	}
+
+	// Ensure the read handle to the pipe for STDOUT is not inherited.
+
+	if (!SetHandleInformation(m_hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0))
+	{
+		// log error
+		return HRESULT_FROM_WIN32(GetLastError());
+	}
+
+	ProgramOutput = _T("");
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.hStdError = m_hChildStd_OUT_Wr;
+	si.hStdOutput = m_hChildStd_OUT_Wr;
+	si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+
+	ZeroMemory(&pi, sizeof(pi));
+
+	// Start the child process. 
+	if (!CreateProcessA(NULL,		// No module name (use command line)
+		(LPSTR)cmdline.c_str(),			// Command line
+		NULL,						// Process handle not inheritable
+		NULL,						// Thread handle not inheritable
+		TRUE,						// Set handle inheritance
+		0,							// No creation flags
+		NULL,						// Use parent's environment block
+		NULL,						// Use parent's starting directory 
+		(LPSTARTUPINFOA) & si,		// Pointer to STARTUPINFO structure
+		&pi)						// Pointer to PROCESS_INFORMATION structure
+		)
+	{
+		AfxMessageBox(_T("Failed to create child process"));
+		return HRESULT_FROM_WIN32(GetLastError());
+	}
+
+	if (WaitForSingleObject(pi.hProcess, timeout) == WAIT_TIMEOUT)
+		TerminateProcess(pi.hProcess, dwExitCode);
+//	WaitForSingleObject(pi.hThread, INFINITE);
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+	CloseHandle(m_hChildStd_OUT_Wr);
+
+	DWORD dwRead;
+	CHAR chBuf[1];
+	BOOL bSuccess = FALSE;
+
+	for (;;)
+	{
+		bSuccess = ReadFile(m_hChildStd_OUT_Rd, chBuf, 1, &dwRead, NULL);
+		if (bSuccess != 1 || dwRead == 0) break;
+		if (chBuf[0]) ProgramOutput += chBuf[0];
+	}
+
+	CloseHandle(m_hChildStd_OUT_Rd);
+
+	return S_OK;
+}
+
+CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
+{
+	CString cmd("\\Windows\\System32\\wsl.exe -t ");
+
+	cmd.Append(distro);
+
+	if ( RunExternalProgram(cmd) != S_OK )
+		return _T("Failed to execute command");
+
+	if (ProgramOutput.GetLength() > 4)
+		return ProgramOutput;
+
+	cmd.Format(_T("Distribution '%s' stopped."), distro.GetString());
+
+	return cmd;
+}
+
+CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
+{
+	CString cmd("\\Windows\\System32\\wsl.exe -d ");
+
+	cmd.Append(distro);
+	cmd.Append(_T(" uname -a"));
+
+	if (RunExternalProgram(cmd) != S_OK)
+		return _T("Failed to execute command");
+
+	if (ProgramOutput.GetLength() > 4)
+		return ProgramOutput;
+
+	cmd.Format(_T("Distribution '%s' started."), distro.GetString());
+
+	return cmd;
+}
+
+
+// CWSLTuxDlg message handlers
 
 bool CWSLTuxDlg::GetWSLInfo()
 {
-	FILE* pPipe;
-
-	// WSL.EXE outputs nulls for some strange reason
-	// read the output from wsl.exe into a listbox
-	if (!(pPipe = _popen("\\Windows\\System32\\wsl.exe -l -v", "rb")))
-		return false;
-
+	RunExternalProgram(_T("\\Windows\\System32\\wsl.exe -l -v"));
+	std::string strProgramOutput = CT2CA(ProgramOutput);
+	std::istringstream pPipe(strProgramOutput);
 	CString cstr = _T(""), ctmp;
 	CString dbgmsg;
-	int ch, col, ofs, i = 0;
+	int col, ofs, i = 0;
+	char ch;
 	std::vector<CString>::iterator vsi, vsj;
 
-	wslinfo.rows = 0;
-	wslinfo.num_running = 0;
+	wslinfo.clear(); // reset wslinfo object
 
-	while ((ch = getc(pPipe)) != EOF)
+	while ( pPipe.get(ch) )
 	{
 		switch (ch)
 		{
@@ -164,8 +293,7 @@ bool CWSLTuxDlg::GetWSLInfo()
 					if (vsi->Left(5).CompareNoCase(_T("STATE")) == 0
 					&&  ctmp.CompareNoCase(_T("Running")) == 0)
 						++wslinfo.num_running;
-					dbgmsg.Format(_T("VSI: %s  ctmp: %s nrunning: %d\n"), *vsi, ctmp, wslinfo.num_running);
-					OutputDebugString(dbgmsg);
+
 					wslinfo.vcol[col++].push_back(ctmp);
 					ofs += vsi->GetLength();
 				}
@@ -178,11 +306,36 @@ bool CWSLTuxDlg::GetWSLInfo()
 		}
 	}
 
-	_pclose(pPipe);
-
 	return wslinfo.rows > 0 ? true : false;
 }
 
+void CWSLTuxDlg::PopulateWSLlist()
+{
+	CString cstr = _T(""), ctmp;
+	int col, i = 0;
+	std::vector<CString>::iterator vsi, vsj;
+	int nIndex;
+
+	m_WSLlistCtrl.DeleteAllItems();
+
+	for (i = 0; i < wslinfo.rows; ++i)
+	{
+		vsj = wslinfo.vcol[0].begin();
+		if (vsj == wslinfo.vcol[0].end())
+			break;
+		nIndex = m_WSLlistCtrl.InsertItem(i, *vsj);
+		wslinfo.vcol[0].erase(vsj);
+		for (col = 1, vsi = wslinfo.columns.begin() + 1; vsi != wslinfo.columns.end(); ++vsi)
+		{
+			vsj = wslinfo.vcol[col].begin();
+			if (vsj == wslinfo.vcol[col].end())
+				continue;
+			m_WSLlistCtrl.SetItemText(nIndex, col, *vsj);
+			wslinfo.vcol[col].erase(vsj);
+			++col;
+		}
+	}
+}
 
 BOOL CWSLTuxDlg::OnInitDialog()
 {
@@ -219,33 +372,16 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
 	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
 
-	if ( GetWSLInfo() )
+	if (GetWSLInfo())
 	{
-		CString cstr = _T(""), ctmp;
-		int col, i = 0;
-		std::vector<CString>::iterator vsi, vsj;
-		int nIndex;
-
-		for (i = 0; i < wslinfo.rows; ++i)
-		{
-			vsj = wslinfo.vcol[0].begin();
-			if (vsj == wslinfo.vcol[0].end())
-				break;
-			nIndex = m_WSLlistCtrl.InsertItem(i, *vsj);
-			wslinfo.vcol[0].erase(vsj);
-			for (col = 1, vsi = wslinfo.columns.begin()+1; vsi != wslinfo.columns.end(); ++vsi)
-			{
-				vsj = wslinfo.vcol[col].begin();
-				if (vsj == wslinfo.vcol[col].end())
-					continue;
-				m_WSLlistCtrl.SetItemText(nIndex, col, *vsj);
-				wslinfo.vcol[col].erase(vsj);
-				++col;
-			}
-		}
+		PopulateWSLlist();
+		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
 	}
 
 	AddIconToSysTray();
+
+//	RunExternalProgram(_T("\\Windows\\System32\\wsl.exe -l -v"));
+//	AfxMessageBox(ProgramOutput);
 
 //	int nIndex = m_WSLlistCtrl.InsertItem(i++, _T(""));
 //	m_WSLlistCtrl.SetItemText(nIndex, 1, cstr);
@@ -306,22 +442,16 @@ HCURSOR CWSLTuxDlg::OnQueryDragIcon()
 void CWSLTuxDlg::OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult)
 {
 	LPNMLISTVIEW pNMLV = reinterpret_cast<LPNMLISTVIEW>(pNMHDR);
-	// TODO: Add your control notification handler code here
 	int selectedItem = pNMLV->iItem;
 	CString msg;
-	//msg.Format(_T("Item # %d"), selectedItem);
 	msg = m_WSLlistCtrl.GetItemText(selectedItem, 1);
 	*pResult = 0;
 	CWnd* label = GetDlgItem(IDC_STATIC2);
 	label->SetWindowTextW(msg);
-//	AfxMessageBox(_T("CLICK"));
 }
 
 void CWSLTuxDlg::AddIconToSysTray()
 {
-	HICON	m_hIconInfo = NULL;//(HICON)::LoadImage(), MAKEINTRESOURCE(IDI_ICON_INFO), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR | LR_LOADTRANSPARENT);
-
-	// TODO: Add your control notification handler code here
 	NOTIFYICONDATA NID;
 
 	memset(&NID, 0, sizeof(NID));
@@ -345,6 +475,27 @@ void CWSLTuxDlg::AddIconToSysTray()
 	//CDialogEx::OnOK();
 }
 
+void CWSLTuxDlg::UpdateSysTrayIcon()
+{
+	NOTIFYICONDATA NID;
+
+	memset(&NID, 0, sizeof(NID));
+
+	NID.cbSize = sizeof(NID);
+	if (wslinfo.num_running)
+		NID.hIcon = this->m_hIcon;
+	else
+		NID.hIcon = this->m_hIcon_disabled;
+
+	NID.hWnd = this->m_hWnd;
+	NID.uID = WM_TRAY_ID;
+	StrCpyW(NID.szTip, L"WSL Tux");
+	NID.uCallbackMessage = WM_TRAY_MESSAGE;
+
+	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
+	Shell_NotifyIcon(NIM_MODIFY, &NID);
+}
+
 void CWSLTuxDlg::RemIconFromSysTray()
 {
 	NOTIFYICONDATA NID;
@@ -362,13 +513,21 @@ void CAboutDlg::OnBnClickedOk()
 	CDialogEx::OnOK();
 }
 
+void CWSLTuxDlg::RefreshWSLInfo()
+{
+	int prev_running = wslinfo.num_running;
+
+	if (GetWSLInfo())
+	{
+		PopulateWSLlist();
+		if (wslinfo.num_running != prev_running)
+			UpdateSysTrayIcon();
+	}
+}
 
 void CWSLTuxDlg::OnBnClickedOk()
 {
-	// TODO: Add your control notification handler code here
-
-	this->ShowWindow(SW_HIDE);
-//	CDialogEx::OnOK();
+	RefreshWSLInfo();
 }
 
 void CWSLTuxDlg::OnBnClickedCancel()
@@ -387,12 +546,7 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 
 	UINT uMsg = (UINT)lParam;
 	const int IDM_EXIT = 100;
-#if 0
-	CString dbgmsg;
 
-	dbgmsg.Format(_T("OnTrayNotify(%d, %d)\n"), (UINT)wParam, (UINT)lParam);
-	OutputDebugString(dbgmsg);
-#endif
 	switch (uMsg)
 	{
 		case WM_LBUTTONDOWN:
@@ -434,4 +588,70 @@ void CWSLTuxDlg::OnClose()
 	// TODO: Add your message handler code here and/or call default
 	this->ShowWindow(SW_HIDE);
 	CDialogEx::OnClose();
+}
+
+
+void CWSLTuxDlg::OnBnClickedStop()
+{
+	POSITION pos = m_WSLlistCtrl.GetFirstSelectedItemPosition();
+
+	if (!pos)
+	{
+		AfxMessageBox(_T("No distribution selected"));
+		return;
+	}
+
+	int nItem = m_WSLlistCtrl.GetNextSelectedItem(pos);
+	CString distro = m_WSLlistCtrl.GetItemText(nItem, 1);
+	CString prompt;
+
+	prompt.Format(_T("Stop %s. Are you sure?"), distro.GetString());
+
+	if (AfxMessageBox(prompt, MB_YESNO) != IDYES)
+		return;
+
+	prompt = WSLstopDistribution(distro);
+
+	RefreshWSLInfo();
+
+	AfxMessageBox(prompt);
+}
+
+
+void CWSLTuxDlg::OnBnClickedStart()
+{
+	POSITION pos = m_WSLlistCtrl.GetFirstSelectedItemPosition();
+
+	if (!pos)
+	{
+		AfxMessageBox(_T("No distribution selected"));
+		return;
+	}
+
+	int nItem = m_WSLlistCtrl.GetNextSelectedItem(pos);
+	CString distro = m_WSLlistCtrl.GetItemText(nItem, 1);
+	CString prompt;
+
+	prompt.Format(_T("Start %s. Are you sure?"), distro.GetString());
+
+	if (AfxMessageBox(prompt, MB_YESNO) != IDYES)
+		return;
+
+	prompt = WSLstartDistribution(distro);
+
+	RefreshWSLInfo();
+
+	AfxMessageBox(prompt);
+}
+
+
+void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
+{
+	if (!KillTimer(nIDEvent))
+		return;
+	//	CDialogEx::OnTimer(nIDEvent);
+
+	RefreshWSLInfo();
+
+	SetTimer(nIDEvent, TIMER_INTERVAL, NULL);
 }
