@@ -6,16 +6,51 @@
 
 #include <vector>
 
+class wslDistribution
+{
+public:
+	CString regkey;
+	CString name;
+	CString packagefamilyname;
+	DWORD version;
+	DWORD state;
+	DWORD flags;
+	DWORD uid;
+	std::vector<DWORD> pids;
+	void clear() { pids.clear(); }
+	wslDistribution()
+	{
+		version = 0;
+		state = 0;
+		flags = 0;
+		uid = 0;
+	}
+	wslDistribution(const wslDistribution& d)
+		: regkey(d.regkey), name(d.name), packagefamilyname(d.packagefamilyname),
+		  version(d.version), state(d.state), flags(d.flags), uid(d.uid)
+	{
+	}
+	wslDistribution(CString k, CString n, DWORD v) : regkey(k), name(n), version(v)
+	{
+		state = 0;
+		flags = 0;
+		uid = 0;
+	}
+};
+
 class WSLInfo
 {
 public:
 	int rows;
-	int num_running;
+	size_t dists_running;
+	size_t procs_running;
 	std::vector<CString> columns;
 	std::vector<CString> vcol[10];
+	std::vector<wslDistribution> distributions;
 	void clear();
 	WSLInfo() { clear(); }
 };
+
 
 // CWSLTuxDlg dialog
 class CWSLTuxDlg : public CDialogEx
@@ -50,6 +85,8 @@ public:
 	UINT_PTR m_minuteTimer = NULL;
 	CListCtrl m_WSLlistCtrl;
 	CString ProgramOutput;
+	CString lsxxDefaultDistribution;
+	DWORD 	lsxxDefaultVersion = 2;
 	HANDLE m_hChildStd_OUT_Rd = 0;
 	HANDLE m_hChildStd_OUT_Wr = 0;
 	HANDLE m_hreadDataFromExtProgram = 0;
@@ -65,6 +102,8 @@ public:
 	void StopTimer();
 	void StartTimer();
 	void RestartTimer();
+	bool GetDistributionList();
+	bool GetDistributionStates();
 	CString WSLstopDistribution(CString& distro);
 	CString WSLstartDistribution(CString& distro);
 

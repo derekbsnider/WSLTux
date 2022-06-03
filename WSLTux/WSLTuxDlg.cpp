@@ -10,6 +10,7 @@
 #include "pch.h"
 #include "framework.h"
 #include <vector>
+#include <map>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -21,6 +22,15 @@
 #include "console_pipe.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <locale>         // std::wstring_convert
+#include <codecvt>        // std::codecvt_utf8
+#include <winternl.h>
+#pragma comment(lib,"ntdll.lib")
+#include <tchar.h>
+#include <psapi.h>
+
+typedef std::codecvt_utf8<wchar_t> ccvt;
+
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -29,8 +39,9 @@
 #define WM_TRAY_ID (WM_USER + 0x2)
 #define WM_TRAY_MESSAGE (WM_USER + 0x100)
 #define IDT_MINUTE_TIMER (WM_USER + 0x200)
-
-#define TIMER_INTERVAL 60000
+#define TIMER_INTERVAL 10000
+#define MAX_KEY_LENGTH 256
+#define MAX_VALUE_NAME 16383
 
 // CAboutDlg dialog used for App About
 
@@ -131,10 +142,13 @@ void getColumns(std::vector<CString>& columns, CString& cstr)
 void WSLInfo::clear()
 {
 	rows = 0;
-	num_running = 0;
+	dists_running = 0;
+	procs_running = 0;
 	columns.clear();
 	for (int i = 0; i < 10; ++i)
 		vcol[i].clear();
+	for (std::vector<wslDistribution>::iterator wdi = distributions.begin(); wdi != distributions.end(); ++wdi)
+		wdi->clear();
 }
 
 
@@ -261,7 +275,24 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 
 
 // CWSLTuxDlg message handlers
+bool CWSLTuxDlg::GetWSLInfo()
+{
+	if (!GetDistributionList())
+	{
+		OutputDebugString(_T("GetDistributionList() failed!\n"));
+		return false;
+	}
+	if (!GetDistributionStates())
+	{
+		OutputDebugString(_T("GetDistributionStates() failed!\n"));
+		return false;
+	}
+	StartTimer();
+	return true;
+}
 
+
+#if 0
 bool CWSLTuxDlg::GetWSLInfo()
 {
 	RunExternalProgram(_T("\\Windows\\System32\\wsl.exe -l -v"));
@@ -317,7 +348,43 @@ bool CWSLTuxDlg::GetWSLInfo()
 	StartTimer();
 	return true;
 }
+#endif
 
+void CWSLTuxDlg::PopulateWSLlist()
+{
+	CString cstr = _T(""), ctmp;
+	int i = 0;
+	std::vector<CString>::iterator vsi, vsj;
+	std::vector<wslDistribution>::iterator wdi;
+	int nIndex;
+
+	if (m_WSLlistCtrl.DeleteAllItems() == 0)
+		AfxMessageBox(_T("DeleteAllItems Failed!"));
+
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+	{
+		// set * if we match default distribution
+		if (!lsxxDefaultDistribution.Compare(wdi->regkey))
+			cstr = _T("*");
+		else
+			cstr = _T("");
+		nIndex = m_WSLlistCtrl.InsertItem(i, cstr);
+		m_WSLlistCtrl.SetItemText(nIndex, 1, wdi->name);
+		if (wdi->pids.size())
+		{
+			cstr.Format(_T("Running (%llu)"), wdi->pids.size());
+			m_WSLlistCtrl.SetItemText(nIndex, 2, cstr);
+//			m_WSLlistCtrl.SetItemText(nIndex, 2, _T("Running"));
+		}
+		else
+			m_WSLlistCtrl.SetItemText(nIndex, 2, _T("Stopped"));
+	
+		cstr.Format(_T("%d"), wdi->version);
+		m_WSLlistCtrl.SetItemText(nIndex, 3, cstr);
+	}
+}
+
+#if 0
 void CWSLTuxDlg::PopulateWSLlist()
 {
 	CString cstr = _T(""), ctmp;
@@ -345,6 +412,7 @@ void CWSLTuxDlg::PopulateWSLlist()
 		}
 	}
 }
+#endif
 
 void CWSLTuxDlg::StopTimer()
 {
@@ -354,7 +422,7 @@ void CWSLTuxDlg::StopTimer()
 
 void CWSLTuxDlg::StartTimer()
 {
-	if ( wslinfo.rows )
+	//if ( wslinfo.rows )
 		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
 }
 
@@ -363,6 +431,536 @@ void CWSLTuxDlg::RestartTimer()
 	StopTimer();
 	StartTimer();
 }
+
+class MyRegInfo
+{
+public:
+	HKEY	 hKey;							// key reference
+	WCHAR    achKey[MAX_KEY_LENGTH];		// buffer for subkey name
+	DWORD    cbName = MAX_KEY_LENGTH;		// size of name string
+	WCHAR    achClass[MAX_PATH];			// buffer for class name
+	DWORD    cchClassName = MAX_PATH;		// size of class string
+	DWORD    cSubKeys;						// number of subkeys
+	DWORD    cbMaxSubKey;					// longest subkey size
+	DWORD    cchMaxClass;					// longest class string
+	DWORD    cValues;						// number of values for key
+	DWORD    cchMaxValue;					// longest value name
+	DWORD    cbMaxValueData;				// longest value data
+	DWORD    cbSecurityDescriptor;			// size of security descriptor
+	FILETIME ftLastWriteTime;				// last write time
+	DWORD	 retCode;
+	WCHAR*	 achValue;
+	DWORD	 cchValue;
+	DWORD	 dwValue;
+	DWORD	 dwIndex;
+	DWORD	 lpType;
+
+	void init()
+	{
+		achKey[0] = '\0';
+		achClass[0] = '\0';
+		achValue[0] = '\0';
+		cbName = MAX_KEY_LENGTH;
+		cSubKeys = 0;
+		cbMaxSubKey = 0;
+		cchMaxClass = 0;
+		cValues = 0;
+		cchMaxValue = 0;
+		cbMaxValueData = 0;
+		cbSecurityDescriptor = 0;
+		retCode = 0;
+		cchValue = MAX_VALUE_NAME;
+		dwIndex = 0;
+		dwValue = 0;
+		lpType = 0;
+		hKey = 0;
+	}
+
+	MyRegInfo(HKEY hKeyRoot, LPCWSTR lpSubKey)
+	{
+		achValue = (WCHAR *)malloc(MAX_VALUE_NAME);
+		init();
+
+		if ( (retCode=::RegOpenKeyEx(HKEY_CURRENT_USER, lpSubKey, 0, KEY_READ, &hKey)) != ERROR_SUCCESS)
+			return;
+
+		// Get the class name and the value count.
+		retCode = RegQueryInfoKey(
+			hKey,                    // key handle
+			achClass,                // buffer for class name
+			&cchClassName,           // size of class string
+			NULL,                    // reserved
+			&cSubKeys,               // number of subkeys
+			&cbMaxSubKey,            // longest subkey size
+			&cchMaxClass,            // longest class string
+			&cValues,                // number of values for this key
+			&cchMaxValue,            // longest value name
+			&cbMaxValueData,         // longest value data
+			&cbSecurityDescriptor,   // security descriptor
+			&ftLastWriteTime);       // last write time
+	}
+
+	~MyRegInfo()
+	{
+		if ( achValue )
+			free(achValue);
+		if ( hKey )
+			::RegCloseKey(hKey);
+	}
+
+	DWORD EnumKey(DWORD i)
+	{
+		cbName = MAX_KEY_LENGTH;
+		achKey[0] = '\0';
+		return RegEnumKeyEx(hKey, i, achKey, &cbName, NULL, NULL, NULL, &ftLastWriteTime);
+	}
+
+	DWORD EnumValue(DWORD i)
+	{
+		cchValue = MAX_VALUE_NAME;
+		achValue[0] = '\0';
+		return RegEnumValue(hKey, i, achValue, &cchValue, NULL, NULL, NULL, NULL);
+	}
+
+	DWORD QueryValueSZ(CString keyname)
+	{
+		cchValue = MAX_VALUE_NAME;
+		achValue[0] = '\0';
+
+		return RegQueryValueEx(hKey, keyname, NULL, &lpType, (LPBYTE)achValue, &cchValue);
+	}
+
+	DWORD QueryValueDW(CString keyname)
+	{
+		cchValue = MAX_VALUE_NAME;
+		dwValue = 0;
+
+		return RegQueryValueEx(hKey, keyname, NULL, &lpType, (LPBYTE)&dwValue, &cchValue);
+	}
+
+	WCHAR* key()
+	{
+		return achKey;
+	}
+
+	DWORD dwvalue()
+	{
+		if (lpType != REG_DWORD)
+			return 0;
+
+		return dwValue;
+	}
+
+	WCHAR* szvalue()
+	{
+		if (lpType != REG_SZ)
+			return NULL;
+
+		return achValue;
+	}
+};
+
+
+bool CWSLTuxDlg::GetDistributionList()
+{
+	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
+	CString DbgString;
+	DWORD i;
+
+	MyRegInfo reginfo(HKEY_CURRENT_USER, LxssKey);
+
+	if ( reginfo.retCode != ERROR_SUCCESS )
+	{
+		OutputDebugString(_T("RegOpenKeyEx LxssKey failed!\n"));
+		return false;
+	}
+
+	// get default distribution and version
+	if (reginfo.cValues && (reginfo.QueryValueSZ(L"DefaultDistribution") == ERROR_SUCCESS))
+	{
+		lsxxDefaultDistribution = reginfo.szvalue();
+		DbgString.Format(_T("DefaultDistribution: %s\n"), lsxxDefaultDistribution.GetString());
+		OutputDebugString(DbgString.GetString());
+		if (reginfo.QueryValueDW(L"DefaultVersion") == ERROR_SUCCESS)
+			lsxxDefaultVersion = reginfo.dwvalue();
+	}
+	else
+		OutputDebugString(_T("Could not find default distribution\n"));
+
+	wslinfo.distributions.clear();
+
+	// build distribution list
+	if ( reginfo.cSubKeys )
+	{
+		DbgString.Format(_T("\nNumber of subkeys : % d\n"), reginfo.cSubKeys);
+		OutputDebugString(DbgString);
+
+		for (i = 0; i < reginfo.cSubKeys; i++)
+		{
+			if ( reginfo.EnumKey(i) == ERROR_SUCCESS )
+			{
+				CString csDistKey = LxssKey + "\\" + reginfo.key();
+
+				DbgString.Format(_T("(%d) distribution: %s\n"), i + 1, reginfo.key());
+				OutputDebugString(DbgString.GetString());
+
+				MyRegInfo distinfo(HKEY_CURRENT_USER,csDistKey);
+
+				if ( distinfo.retCode != ERROR_SUCCESS )
+				{
+					OutputDebugString(_T("Failed to open dist key\n"));
+					continue;
+				}
+
+				if (!distinfo.cValues)
+				{
+					OutputDebugString(_T("no cvalues\n"));
+					continue;
+				}
+
+				if ( distinfo.QueryValueSZ(L"DistributionName") != ERROR_SUCCESS )
+				{
+					OutputDebugString(_T("Failed to get distribution name\n"));
+					continue;
+				}
+
+				wslDistribution dist;
+
+				DbgString.Format(_T("... DistributionName: %s\n"), distinfo.szvalue());
+				OutputDebugString(DbgString.GetString());
+
+				dist.regkey = reginfo.key();
+				dist.name = distinfo.szvalue();
+
+				if (distinfo.QueryValueDW(L"Version") == ERROR_SUCCESS)
+					dist.version = distinfo.dwvalue();
+				if (distinfo.QueryValueDW(L"Flags") == ERROR_SUCCESS)
+					dist.flags = distinfo.dwvalue();
+				if (distinfo.QueryValueDW(L"DefaultUid") == ERROR_SUCCESS)
+					dist.uid = distinfo.dwvalue();
+				if (distinfo.QueryValueSZ(L"PackageFamilyName") == ERROR_SUCCESS)
+					dist.packagefamilyname = distinfo.szvalue();
+
+				wslinfo.distributions.push_back(dist);
+			}
+		}
+	}
+	else
+		OutputDebugString(_T("Could not find any distributions!\n"));
+
+	return true;
+}
+
+int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
+{
+	TCHAR szProcessName[MAX_PATH] = { 0 };
+	CString dbg;
+
+	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
+
+/*
+	if (processID == 37356 || processID == 21876 || processID == 35960 || processID == 24260)
+	{
+		dbg.Format(_T("AddWSLHost(%d) should be wslhost\n"), processID);
+		OutputDebugString(dbg.GetString());
+	}
+*/
+
+	if (!hProcess)
+	{
+		dbg.Format(_T("OpenProcess(%d) failed\n"), processID);
+		OutputDebugString(dbg.GetString());
+		return -1;
+	}
+
+	HMODULE hMod;
+	DWORD cbNeeded;
+
+	if (!EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded))
+	{
+		dbg.Format(_T("EnumProcessModules(%d) failed\n"), processID);
+		OutputDebugString(dbg.GetString());
+		CloseHandle(hProcess);
+		return -1;
+	}
+
+	GetModuleBaseName(hProcess, hMod, szProcessName, sizeof(szProcessName) / sizeof(TCHAR));
+	// must be a wslhost.exe process
+	if (_wcsicmp(szProcessName,L"wslhost.exe"))
+	{
+		//	dbg.Format(_T("'%s' not wslhost.exe\n"), szProcessName);
+		//	OutputDebugString(dbg.GetString());
+		CloseHandle(hProcess);
+		return 0;
+	}
+
+	OutputDebugString(_T("Got wslhost.exe!\n"));
+
+	PROCESS_BASIC_INFORMATION pbi;
+	NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), nullptr);
+
+	if (!NT_SUCCESS(status))
+	{
+		dbg.Format(_T("NtQueryInfomationProcess Failed\n"));
+		OutputDebugString(dbg.GetString());
+		CloseHandle(hProcess);
+		return -1;
+	}
+
+	RTL_USER_PROCESS_PARAMETERS upp;
+	SIZE_T dwSize;
+	PEB peb;
+
+	ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(PEB), (SIZE_T*)&dwSize);
+	ReadProcessMemory(hProcess, peb.ProcessParameters, &upp, sizeof(RTL_USER_PROCESS_PARAMETERS), (SIZE_T*)&dwSize);
+
+	WCHAR* CmdLine = (WCHAR*)malloc(upp.CommandLine.Length * 2);
+
+	if (!CmdLine)
+	{
+		CloseHandle(hProcess);
+		return -1;
+	}
+
+	ReadProcessMemory(hProcess, upp.CommandLine.Buffer, CmdLine, upp.CommandLine.Length, (SIZE_T*)&dwSize);
+
+	std::wstring wcmd(CmdLine);
+	//std::wstring_convert<ccvt> wstrtostr;
+	//std::string cmd = wstrtostr.to_bytes(wcmd);
+	CString cmd(wcmd.c_str());
+
+	wslhosts.insert(std::pair<DWORD,CString>(processID, cmd));
+
+	free(CmdLine);
+
+	CloseHandle(hProcess);
+
+	return 1;
+}
+
+// build vector of wslhost.exe process command lines
+int GetWSLhosts(std::map<DWORD, CString>& wslhosts)
+{
+	// Get the list of process identifiers.
+
+	DWORD aProcesses[1024], cbNeeded, cProcesses;
+	unsigned int i;
+
+	if (!EnumProcesses(aProcesses, sizeof(aProcesses), &cbNeeded))
+		return -1;
+
+	cProcesses = cbNeeded / sizeof(DWORD);
+
+	wslhosts.clear();
+
+	for (i = 0; i < cProcesses; i++)
+		if (aProcesses[i])
+			AddWSLhost(aProcesses[i], wslhosts);
+
+	CString dbg;
+	dbg.Format(_T("GetWSLhosts() total processes: %d\n"), cProcesses);
+	OutputDebugString(dbg.GetString());
+
+	return 0;
+}
+
+
+// search for wslhost.exe processes with --distro-id matching distributions
+bool CWSLTuxDlg::GetDistributionStates()
+{
+	std::map<DWORD, CString> wslhosts;
+	std::map<DWORD, CString>::iterator wi;
+	std::vector<wslDistribution>::iterator wdi;
+	CString dbg;
+
+	if (GetWSLhosts(wslhosts) == -1)
+	{
+		OutputDebugString(_T("GetWSLhosts() failed!\n"));
+		return false;
+	}
+
+	dbg.Format(_T("wslhosts.size() %llu\n"), wslhosts.size());
+	OutputDebugString(dbg.GetString());
+
+	wslinfo.clear();
+
+	// clear distribution pid lists
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+		wdi->pids.clear();
+
+	// grab pids matching distributions
+	for (wi = wslhosts.begin(); wi != wslhosts.end(); ++wi)
+	{
+		dbg.Format(_T("Evaluating wslhost %d: %s\n"), wi->first, wi->second.GetString());
+		OutputDebugString(dbg.GetString());
+		for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+		{
+			if (wi->second.Find(wdi->regkey) != -1)
+			{
+				dbg.Format(_T("Found %s in %s\n"), wdi->regkey.GetString(), wi->second.GetString());
+				OutputDebugString(dbg.GetString());
+				wdi->pids.push_back(wi->first);
+			}
+		}
+	}
+
+	// set num running
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+	{
+		if (wdi->pids.size())
+		{
+			++wslinfo.dists_running;
+			wslinfo.procs_running += wdi->pids.size();
+		}
+	}
+	return true;
+}
+
+#if 0
+bool CWSLTuxDlg::GetDistributionList()
+{
+	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
+	CString Display = _T("DisplayName");
+	CString DbgString;
+	HKEY hKey;
+
+	if (::RegOpenKeyEx(HKEY_CURRENT_USER, LxssKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+	{
+		OutputDebugString(_T("RegOpenKeyEx failed\n"));
+		return false;
+	}
+
+	WCHAR    achKey[MAX_KEY_LENGTH];		// buffer for subkey name
+//	DWORD    cbName;						// size of name string
+	WCHAR    achClass[MAX_PATH] = {};		// buffer for class name
+	DWORD    cchClassName = MAX_PATH;		// size of class string
+	DWORD    cSubKeys = 0;					// number of subkeys
+	DWORD    cbMaxSubKey;					// longest subkey size
+	DWORD    cchMaxClass;					// longest class string
+	DWORD    cValues;						// number of values for key
+	DWORD    cchMaxValue;					// longest value name
+	DWORD    cbMaxValueData;				// longest value data
+	DWORD    cbSecurityDescriptor;			// size of security descriptor
+	FILETIME ftLastWriteTime;				// last write time
+	DWORD	 i, retCode;
+	WCHAR	 achValue[MAX_VALUE_NAME];
+	DWORD	 cchValue = MAX_VALUE_NAME;
+	DWORD	 dwIndex = 0;
+	//	LONG	 lRet;
+	DWORD	 cbName = MAX_KEY_LENGTH;
+	//	TCHAR	 szSubKeyName[MAX_KEY_LENGTH];
+
+		// Get the class name and the value count.
+	retCode = RegQueryInfoKey(
+		hKey,                    // key handle
+		achClass,                // buffer for class name
+		&cchClassName,           // size of class string
+		NULL,                    // reserved
+		&cSubKeys,               // number of subkeys
+		&cbMaxSubKey,            // longest subkey size
+		&cchMaxClass,            // longest class string
+		&cValues,                // number of values for this key
+		&cchMaxValue,            // longest value name
+		&cbMaxValueData,         // longest value data
+		&cbSecurityDescriptor,   // security descriptor
+		&ftLastWriteTime);       // last write time
+
+	if (cSubKeys)
+	{
+		DbgString.Format(_T("\nNumber of subkeys : % d\n"), cSubKeys);
+		OutputDebugString(DbgString);
+
+		for (i = 0; i < cSubKeys; i++)
+		{
+			cbName = MAX_KEY_LENGTH;
+			retCode = RegEnumKeyEx(hKey, i, achKey, &cbName, NULL, NULL, NULL, &ftLastWriteTime);
+
+			if (retCode == ERROR_SUCCESS)
+			{
+				DbgString.Format(_T("(%d) key: %s\n"), i + 1, achKey);
+				OutputDebugString(DbgString);
+			}
+		}
+	}
+	else
+		OutputDebugString(_T("No subkeys to be enumerated!\n"));
+
+	// Enumerate the key values
+	if (cValues)
+	{
+		DbgString.Format(_T("\nNumber of values: %d\n"), cValues);
+		OutputDebugString(DbgString);
+
+		for (i = 0, retCode = ERROR_SUCCESS; i < cValues; i++)
+		{
+			cchValue = MAX_VALUE_NAME;
+			achValue[0] = '\0';
+			retCode = RegEnumValue(hKey, i, achValue, &cchValue, NULL, NULL, NULL, NULL);
+
+			if (retCode == ERROR_SUCCESS)
+			{
+				DbgString.Format(_T("(%d) %s\n"), i + 1, achValue);
+				OutputDebugString(DbgString);
+				if (!wcscmp(achValue, L"DefaultDistribution"))
+				{
+					retCode = RegEnumValue(hKey, i, achValue, &cchValue, NULL, NULL, NULL, NULL);
+					if (retCode == ERROR_SUCCESS)
+					{
+						DbgString.Format(_T("(%d) value: %s\n"), i + 1, achValue);
+						OutputDebugString(DbgString);
+					}
+				}
+
+			}
+		}
+	}
+	else
+		OutputDebugString(_T("No values to be enumerated!\n"));
+
+	::RegCloseKey(hKey);
+
+	return true;
+}
+
+#endif
+
+
+/*
+	while ((lRet = ::RegEnumKeyEx(hKey, dwIndex, szSubKeyName, &cbName, NULL, NULL, NULL, NULL)) != ERROR_NO_MORE_ITEMS)
+	{
+		OutputDebugString(_T("Read item\n"));
+		if (lRet == ERROR_SUCCESS)
+		{
+			HKEY hItem;
+			if (::RegOpenKeyEx(hKey, szSubKeyName, 0, KEY_READ, &hItem) != ERROR_SUCCESS)
+			{
+				OutputDebugString(_T("couldn't open\n"));
+				continue;
+			}
+			// look for DisplayName
+			TCHAR szDisplayName[MAX_KEY_LENGTH];
+			DWORD dwSize = sizeof(szDisplayName);
+			DWORD dwType;
+
+			if (::RegQueryValueEx(hItem, Display, NULL, &dwType, (LPBYTE)&szDisplayName, &dwSize) == ERROR_SUCCESS)
+			{
+				OutputDebugString(_T("*** Got: "));
+				OutputDebugString(szDisplayName);
+				OutputDebugString(_T("\n"));
+				//AfxMessageBox(szDisplayName);
+			}
+			else
+				OutputDebugString(_T("wasn't displayname\n"));
+
+			::RegCloseKey(hItem);
+		}
+		++dwIndex;
+		cbName = MAX_KEY_LENGTH;
+	}
+	::RegCloseKey(hKey);
+
+	//	AfxMessageBox(ProgramOutput);
+*/
 
 BOOL CWSLTuxDlg::OnInitDialog()
 {
@@ -399,19 +997,16 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
 	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
 
-	if (GetWSLInfo() && wslinfo.rows)
+	if (GetWSLInfo() /* && wslinfo.rows*/)
 	{
 		PopulateWSLlist();
 		StartTimer();
 	}
 
+//	GetDistributionList();
+//	Shutdown();
+
 	AddIconToSysTray();
-
-//	RunExternalProgram(_T("\\Windows\\System32\\wsl.exe -l -v"));
-//	AfxMessageBox(ProgramOutput);
-
-//	int nIndex = m_WSLlistCtrl.InsertItem(i++, _T(""));
-//	m_WSLlistCtrl.SetItemText(nIndex, 1, cstr);
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
@@ -488,17 +1083,17 @@ void CWSLTuxDlg::AddIconToSysTray()
 
 	//on main function:
 	NID.cbSize = sizeof(NID);
-	if (wslinfo.num_running)
+	if (wslinfo.dists_running)
 		NID.hIcon = this->m_hIcon;
 	else
 		NID.hIcon = this->m_hIcon_disabled;
 
 	NID.hWnd = this->m_hWnd;
 	NID.uID = WM_TRAY_ID;
-	if (wslinfo.num_running == 1)
-		oss << "1 distribution running";
+	if (wslinfo.dists_running == 1)
+		oss << "1 distribution running\n" << wslinfo.procs_running << " processes running";
 	else
-		oss << wslinfo.num_running << " distributions running";
+		oss << wslinfo.dists_running << " distributions running\n" << wslinfo.procs_running << " processes running";
 
 	wcscpy_s(NID.szTip, oss.str().c_str());
 	NID.uCallbackMessage = WM_TRAY_MESSAGE;
@@ -518,17 +1113,17 @@ void CWSLTuxDlg::UpdateSysTrayIcon()
 	memset(&NID, 0, sizeof(NID));
 
 	NID.cbSize = sizeof(NID);
-	if (wslinfo.num_running)
+	if (wslinfo.dists_running)
 		NID.hIcon = this->m_hIcon;
 	else
 		NID.hIcon = this->m_hIcon_disabled;
 
 	NID.hWnd = this->m_hWnd;
 	NID.uID = WM_TRAY_ID;
-	if (wslinfo.num_running == 1)
-		oss << "1 distribution running";
+	if (wslinfo.dists_running == 1)
+		oss << "1 distribution running\n" << wslinfo.procs_running << " processes running";
 	else
-		oss << wslinfo.num_running << " distributions running";
+		oss << wslinfo.dists_running << " distributions running\n" << wslinfo.procs_running << " processes running";
 
 	wcscpy_s(NID.szTip, oss.str().c_str());
 
@@ -557,12 +1152,12 @@ void CAboutDlg::OnBnClickedOk()
 
 void CWSLTuxDlg::RefreshWSLInfo()
 {
-	int prev_running = wslinfo.num_running;
+	size_t prev_running = wslinfo.dists_running;
 
 	if (GetWSLInfo())
 	{
 		PopulateWSLlist();
-		if (wslinfo.num_running != prev_running)
+		if (wslinfo.dists_running != prev_running)
 			UpdateSysTrayIcon();
 	}
 }
