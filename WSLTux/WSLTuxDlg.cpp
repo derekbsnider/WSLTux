@@ -152,7 +152,9 @@ void WSLInfo::clear()
 }
 
 
-
+// This is used to run an external program, typically WSL.EXE
+// The output of the program will be written to this->ProgramOutput
+// A window will not be displayed for the application
 HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 {
 	StopTimer();
@@ -161,7 +163,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	SECURITY_ATTRIBUTES saAttr;
 	std::string cmdline = CT2CA(cmd);
 	DWORD dwExitCode = 0;
-	DWORD timeout = 30000;
+	DWORD timeout = 10000; // timeout after ten seconds
 
 	ZeroMemory(&saAttr, sizeof(saAttr));
 	saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -169,7 +171,6 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	saAttr.lpSecurityDescriptor = NULL;
 
 	// Create a pipe for the child process's STDOUT. 
-
 	if (!CreatePipe(&m_hChildStd_OUT_Rd, &m_hChildStd_OUT_Wr, &saAttr, 0))
 	{
 		// log error
@@ -178,7 +179,6 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	}
 
 	// Ensure the read handle to the pipe for STDOUT is not inherited.
-
 	if (!SetHandleInformation(m_hChildStd_OUT_Rd, HANDLE_FLAG_INHERIT, 0))
 	{
 		// log error
@@ -198,15 +198,15 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 
 	// Start the child process. 
 	if (!CreateProcessA(NULL,		// No module name (use command line)
-		(LPSTR)cmdline.c_str(),			// Command line
-		NULL,						// Process handle not inheritable
+		(LPSTR)cmdline.c_str(),		// Command line
+		NULL,					// Process handle not inheritable
 		NULL,						// Thread handle not inheritable
 		TRUE,						// Set handle inheritance
 		0,							// No creation flags
 		NULL,						// Use parent's environment block
 		NULL,						// Use parent's starting directory 
-		(LPSTARTUPINFOA) & si,		// Pointer to STARTUPINFO structure
-		&pi)						// Pointer to PROCESS_INFORMATION structure
+		(LPSTARTUPINFOA) & si,					// Pointer to STARTUPINFO structure
+		&pi)					// Pointer to PROCESS_INFORMATION structure
 		)
 	{
 		AfxMessageBox(_T("Error: Failed to create child process"));
@@ -214,9 +214,10 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
+	// wait for the process to complete within the timeout, and terminate it if it is taking too long
 	if (WaitForSingleObject(pi.hProcess, timeout) == WAIT_TIMEOUT)
 		TerminateProcess(pi.hProcess, dwExitCode);
-//	WaitForSingleObject(pi.hThread, INFINITE);
+
 	CloseHandle(pi.hThread);
 	CloseHandle(pi.hProcess);
 	CloseHandle(m_hChildStd_OUT_Wr);
@@ -225,6 +226,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	CHAR chBuf[1];
 	BOOL bSuccess = FALSE;
 
+	// read the program's output into the buffer
 	for (;;)
 	{
 		bSuccess = ReadFile(m_hChildStd_OUT_Rd, chBuf, 1, &dwRead, NULL);
@@ -238,6 +240,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	return S_OK;
 }
 
+// Terminate a distrubition using WSL.EXE, does not bring up a window
 CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 {
 	CString cmd("\\Windows\\System32\\wsl.exe -t ");
@@ -255,33 +258,60 @@ CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 	return cmd;
 }
 
+// Start a distribution using WSL.EXE, this should bring up a terminal window
 CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 {
-	CString cmd("\\Windows\\System32\\wsl.exe -d ");
+	CString cmd("C:\\Windows\\System32\\wsl.exe");
+	CString params("-d ");
+	params.Append(distro);
 
-	cmd.Append(distro);
-	cmd.Append(_T(" uname -a"));
+	HINSTANCE hin = ShellExecute(NULL, _T("open"), cmd, params, NULL, SW_SHOWNORMAL);
 
-	if (RunExternalProgram(cmd) != S_OK)
-		return _T("Failed to execute command");
+	if ((INT_PTR)hin > 32)
+	{
+		cmd.Format(_T("Distribution '%s' started."), distro.GetString());
+		return cmd;
+	}
 
-	if (ProgramOutput.GetLength() > 4)
-		return ProgramOutput;
-
-	cmd.Format(_T("Distribution '%s' started."), distro.GetString());
+	cmd.Format(_T("Distribution '%s' failed to start: "), distro.GetString());
+	switch ((INT_PTR)hin)
+	{
+		default:
+			cmd.Append(_T("OS error"));
+			break;
+		case ERROR_FILE_NOT_FOUND:
+			cmd.Append(_T("WSL.EXE not found"));
+			break;
+		case ERROR_BAD_FORMAT:
+			cmd.Append(_T("WSL.EXE is invalid"));
+			break;
+		case SE_ERR_ACCESSDENIED:
+			cmd.Append(_T("Access Denied"));
+			break;
+		case SE_ERR_OOM:
+			cmd.Append(_T("Out of Memory"));
+			break;
+		case SE_ERR_SHARE:
+			cmd.Append(_T("Sharing Violation"));
+			break;
+	}
 
 	return cmd;
 }
 
 
-// CWSLTuxDlg message handlers
+
+// Populate the WSLInfo (this->wslinfo) data structure
 bool CWSLTuxDlg::GetWSLInfo()
 {
+	StopTimer();
+	// Get the list of distributions from the registry
 	if (!GetDistributionList())
 	{
 		OutputDebugString(_T("GetDistributionList() failed!\n"));
 		return false;
 	}
+	// Walk the process list for wslhost.exe processes matching distributions
 	if (!GetDistributionStates())
 	{
 		OutputDebugString(_T("GetDistributionStates() failed!\n"));
@@ -292,64 +322,7 @@ bool CWSLTuxDlg::GetWSLInfo()
 }
 
 
-#if 0
-bool CWSLTuxDlg::GetWSLInfo()
-{
-	RunExternalProgram(_T("\\Windows\\System32\\wsl.exe -l -v"));
-	std::string strProgramOutput = CT2CA(ProgramOutput);
-	std::istringstream pPipe(strProgramOutput);
-	CString cstr = _T(""), ctmp;
-	CString dbgmsg;
-	int col, ofs, i = 0;
-	char ch;
-	std::vector<CString>::iterator vsi, vsj;
-
-	wslinfo.clear(); // reset wslinfo object
-
-	while ( pPipe.get(ch) )
-	{
-		switch (ch)
-		{
-		case '\0': break;
-		case '\n':
-		case '\r':
-			if (cstr.GetLength() > 0)
-			{
-				if (wslinfo.columns.empty())
-				{
-					getColumns(wslinfo.columns, cstr);
-					cstr = _T("");
-					continue;
-				}
-
-				for (col = 0, ofs = 0, vsi = wslinfo.columns.begin(); vsi != wslinfo.columns.end(); ++vsi)
-				{
-					ctmp = cstr.Mid(ofs, vsi->GetLength());
-					ctmp = ctmp.Trim();
-					if (vsi->Left(5).CompareNoCase(_T("STATE")) == 0
-					&&  ctmp.CompareNoCase(_T("Running")) == 0)
-						++wslinfo.num_running;
-
-					wslinfo.vcol[col++].push_back(ctmp);
-					ofs += vsi->GetLength();
-				}
-				cstr = _T("");
-				++wslinfo.rows;
-			}
-			break;
-		default:
-			cstr += (char)ch;
-		}
-	}
-
-	if (!wslinfo.rows)
-		return false;
-
-	StartTimer();
-	return true;
-}
-#endif
-
+// (Re)populate the CListCtrl list of WSL distributions and their states
 void CWSLTuxDlg::PopulateWSLlist()
 {
 	CString cstr = _T(""), ctmp;
@@ -359,7 +332,7 @@ void CWSLTuxDlg::PopulateWSLlist()
 	int nIndex;
 
 	if (m_WSLlistCtrl.DeleteAllItems() == 0)
-		AfxMessageBox(_T("DeleteAllItems Failed!"));
+		OutputDebugString(_T("DeleteAllItems Failed!"));
 
 	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
 	{
@@ -560,7 +533,7 @@ public:
 	}
 };
 
-
+// Retrieve the WSL (lxss) distributions from the Windows Registry
 bool CWSLTuxDlg::GetDistributionList()
 {
 	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
@@ -651,20 +624,13 @@ bool CWSLTuxDlg::GetDistributionList()
 	return true;
 }
 
+// check if a process is wslhost.exe, and add the full commandline to wslhosts
 int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 {
 	TCHAR szProcessName[MAX_PATH] = { 0 };
 	CString dbg;
 
 	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
-
-/*
-	if (processID == 37356 || processID == 21876 || processID == 35960 || processID == 24260)
-	{
-		dbg.Format(_T("AddWSLHost(%d) should be wslhost\n"), processID);
-		OutputDebugString(dbg.GetString());
-	}
-*/
 
 	if (!hProcess)
 	{
@@ -816,151 +782,6 @@ bool CWSLTuxDlg::GetDistributionStates()
 	return true;
 }
 
-#if 0
-bool CWSLTuxDlg::GetDistributionList()
-{
-	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
-	CString Display = _T("DisplayName");
-	CString DbgString;
-	HKEY hKey;
-
-	if (::RegOpenKeyEx(HKEY_CURRENT_USER, LxssKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
-	{
-		OutputDebugString(_T("RegOpenKeyEx failed\n"));
-		return false;
-	}
-
-	WCHAR    achKey[MAX_KEY_LENGTH];		// buffer for subkey name
-//	DWORD    cbName;						// size of name string
-	WCHAR    achClass[MAX_PATH] = {};		// buffer for class name
-	DWORD    cchClassName = MAX_PATH;		// size of class string
-	DWORD    cSubKeys = 0;					// number of subkeys
-	DWORD    cbMaxSubKey;					// longest subkey size
-	DWORD    cchMaxClass;					// longest class string
-	DWORD    cValues;						// number of values for key
-	DWORD    cchMaxValue;					// longest value name
-	DWORD    cbMaxValueData;				// longest value data
-	DWORD    cbSecurityDescriptor;			// size of security descriptor
-	FILETIME ftLastWriteTime;				// last write time
-	DWORD	 i, retCode;
-	WCHAR	 achValue[MAX_VALUE_NAME];
-	DWORD	 cchValue = MAX_VALUE_NAME;
-	DWORD	 dwIndex = 0;
-	//	LONG	 lRet;
-	DWORD	 cbName = MAX_KEY_LENGTH;
-	//	TCHAR	 szSubKeyName[MAX_KEY_LENGTH];
-
-		// Get the class name and the value count.
-	retCode = RegQueryInfoKey(
-		hKey,                    // key handle
-		achClass,                // buffer for class name
-		&cchClassName,           // size of class string
-		NULL,                    // reserved
-		&cSubKeys,               // number of subkeys
-		&cbMaxSubKey,            // longest subkey size
-		&cchMaxClass,            // longest class string
-		&cValues,                // number of values for this key
-		&cchMaxValue,            // longest value name
-		&cbMaxValueData,         // longest value data
-		&cbSecurityDescriptor,   // security descriptor
-		&ftLastWriteTime);       // last write time
-
-	if (cSubKeys)
-	{
-		DbgString.Format(_T("\nNumber of subkeys : % d\n"), cSubKeys);
-		OutputDebugString(DbgString);
-
-		for (i = 0; i < cSubKeys; i++)
-		{
-			cbName = MAX_KEY_LENGTH;
-			retCode = RegEnumKeyEx(hKey, i, achKey, &cbName, NULL, NULL, NULL, &ftLastWriteTime);
-
-			if (retCode == ERROR_SUCCESS)
-			{
-				DbgString.Format(_T("(%d) key: %s\n"), i + 1, achKey);
-				OutputDebugString(DbgString);
-			}
-		}
-	}
-	else
-		OutputDebugString(_T("No subkeys to be enumerated!\n"));
-
-	// Enumerate the key values
-	if (cValues)
-	{
-		DbgString.Format(_T("\nNumber of values: %d\n"), cValues);
-		OutputDebugString(DbgString);
-
-		for (i = 0, retCode = ERROR_SUCCESS; i < cValues; i++)
-		{
-			cchValue = MAX_VALUE_NAME;
-			achValue[0] = '\0';
-			retCode = RegEnumValue(hKey, i, achValue, &cchValue, NULL, NULL, NULL, NULL);
-
-			if (retCode == ERROR_SUCCESS)
-			{
-				DbgString.Format(_T("(%d) %s\n"), i + 1, achValue);
-				OutputDebugString(DbgString);
-				if (!wcscmp(achValue, L"DefaultDistribution"))
-				{
-					retCode = RegEnumValue(hKey, i, achValue, &cchValue, NULL, NULL, NULL, NULL);
-					if (retCode == ERROR_SUCCESS)
-					{
-						DbgString.Format(_T("(%d) value: %s\n"), i + 1, achValue);
-						OutputDebugString(DbgString);
-					}
-				}
-
-			}
-		}
-	}
-	else
-		OutputDebugString(_T("No values to be enumerated!\n"));
-
-	::RegCloseKey(hKey);
-
-	return true;
-}
-
-#endif
-
-
-/*
-	while ((lRet = ::RegEnumKeyEx(hKey, dwIndex, szSubKeyName, &cbName, NULL, NULL, NULL, NULL)) != ERROR_NO_MORE_ITEMS)
-	{
-		OutputDebugString(_T("Read item\n"));
-		if (lRet == ERROR_SUCCESS)
-		{
-			HKEY hItem;
-			if (::RegOpenKeyEx(hKey, szSubKeyName, 0, KEY_READ, &hItem) != ERROR_SUCCESS)
-			{
-				OutputDebugString(_T("couldn't open\n"));
-				continue;
-			}
-			// look for DisplayName
-			TCHAR szDisplayName[MAX_KEY_LENGTH];
-			DWORD dwSize = sizeof(szDisplayName);
-			DWORD dwType;
-
-			if (::RegQueryValueEx(hItem, Display, NULL, &dwType, (LPBYTE)&szDisplayName, &dwSize) == ERROR_SUCCESS)
-			{
-				OutputDebugString(_T("*** Got: "));
-				OutputDebugString(szDisplayName);
-				OutputDebugString(_T("\n"));
-				//AfxMessageBox(szDisplayName);
-			}
-			else
-				OutputDebugString(_T("wasn't displayname\n"));
-
-			::RegCloseKey(hItem);
-		}
-		++dwIndex;
-		cbName = MAX_KEY_LENGTH;
-	}
-	::RegCloseKey(hKey);
-
-	//	AfxMessageBox(ProgramOutput);
-*/
 
 BOOL CWSLTuxDlg::OnInitDialog()
 {
@@ -988,23 +809,21 @@ BOOL CWSLTuxDlg::OnInitDialog()
 
 	// Set the icon for this dialog.  The framework does this automatically
 	//  when the application's main window is not a dialog
-	SetIcon(m_hIcon, TRUE);			// Set big icon
+	SetIcon(m_hIcon, TRUE);		// Set big icon
 	SetIcon(m_hIcon, FALSE);		// Set small icon
 
+	// put column headings into the ClistCtrl
 	m_WSLlistCtrl.SetExtendedStyle(m_WSLlistCtrl.GetExtendedStyle() | LVS_EX_FULLROWSELECT);
 	m_WSLlistCtrl.InsertColumn(0, _T(""), LVCFMT_LEFT, 20);
 	m_WSLlistCtrl.InsertColumn(1, _T("Name"), LVCFMT_LEFT, 250);
 	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
 	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
 
-	if (GetWSLInfo() /* && wslinfo.rows*/)
+	if (GetWSLInfo() && wslinfo.distributions.size() )
 	{
 		PopulateWSLlist();
 		StartTimer();
 	}
-
-//	GetDistributionList();
-//	Shutdown();
 
 	AddIconToSysTray();
 
