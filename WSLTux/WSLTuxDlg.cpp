@@ -357,35 +357,6 @@ void CWSLTuxDlg::PopulateWSLlist()
 	}
 }
 
-#if 0
-void CWSLTuxDlg::PopulateWSLlist()
-{
-	CString cstr = _T(""), ctmp;
-	int col, i = 0;
-	std::vector<CString>::iterator vsi, vsj;
-	int nIndex;
-
-	m_WSLlistCtrl.DeleteAllItems();
-
-	for (i = 0; i < wslinfo.rows; ++i)
-	{
-		vsj = wslinfo.vcol[0].begin();
-		if (vsj == wslinfo.vcol[0].end())
-			break;
-		nIndex = m_WSLlistCtrl.InsertItem(i, *vsj);
-		wslinfo.vcol[0].erase(vsj);
-		for (col = 1, vsi = wslinfo.columns.begin() + 1; vsi != wslinfo.columns.end(); ++vsi)
-		{
-			vsj = wslinfo.vcol[col].begin();
-			if (vsj == wslinfo.vcol[col].end())
-				continue;
-			m_WSLlistCtrl.SetItemText(nIndex, col, *vsj);
-			wslinfo.vcol[col].erase(vsj);
-			++col;
-		}
-	}
-}
-#endif
 
 void CWSLTuxDlg::StopTimer()
 {
@@ -393,17 +364,20 @@ void CWSLTuxDlg::StopTimer()
 		KillTimer(m_minuteTimer);
 }
 
+
 void CWSLTuxDlg::StartTimer()
 {
 	//if ( wslinfo.rows )
 		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
 }
 
+
 void CWSLTuxDlg::RestartTimer()
 {
 	StopTimer();
 	StartTimer();
 }
+
 
 class MyRegInfo
 {
