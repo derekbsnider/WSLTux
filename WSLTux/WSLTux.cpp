@@ -33,6 +33,7 @@ CWSLTuxApp::CWSLTuxApp()
 CWSLTuxApp theApp;
 
 
+
 // CWSLTuxApp initialization
 
 BOOL CWSLTuxApp::InitInstance()

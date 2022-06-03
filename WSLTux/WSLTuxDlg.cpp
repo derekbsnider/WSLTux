@@ -36,12 +36,15 @@ typedef std::codecvt_utf8<wchar_t> ccvt;
 #define new DEBUG_NEW
 #endif
 
-#define WM_TRAY_ID (WM_USER + 0x2)
-#define WM_TRAY_MESSAGE (WM_USER + 0x100)
-#define IDT_MINUTE_TIMER (WM_USER + 0x200)
+#define UWM_TRAY_ID			(WM_USER + 0x2)
+#define UWM_TRAY_MESSAGE	(WM_USER + 0x100)
+#define IDT_MINUTE_TIMER	(WM_USER + 0x200)
+
 #define TIMER_INTERVAL 10000
 #define MAX_KEY_LENGTH 256
 #define MAX_VALUE_NAME 16383
+
+static const UINT UWM_ARE_YOU_ME = ::RegisterWindowMessage(_T("UWM_ARE_YOU_ME"));
 
 // CAboutDlg dialog used for App About
 
@@ -108,13 +111,14 @@ BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 	ON_WM_QUERYDRAGICON()
 	ON_NOTIFY(LVN_ITEMCHANGED, IDC_LIST1, &CWSLTuxDlg::OnLvnItemchangedList1)
 	ON_BN_CLICKED(IDOK, &CWSLTuxDlg::OnBnClickedOk)
-	ON_MESSAGE(WM_TRAY_MESSAGE, OnTrayNotify)
+	ON_MESSAGE(UWM_TRAY_MESSAGE, OnTrayNotify)
 	ON_BN_CLICKED(IDCANCEL, &CWSLTuxDlg::OnBnClickedCancel)
 	ON_WM_CLOSE()
 	ON_BN_CLICKED(IDC_STOP, &CWSLTuxDlg::OnBnClickedStop)
 	ON_BN_CLICKED(IDC_START, &CWSLTuxDlg::OnBnClickedStart)
 	ON_WM_TIMER()
 	ON_WM_WINDOWPOSCHANGING()
+	ON_REGISTERED_MESSAGE(UWM_ARE_YOU_ME, &CWSLTuxDlg::OnAreYouMe)
 END_MESSAGE_MAP()
 #pragma warning( pop )
 
@@ -130,6 +134,32 @@ void WSLInfo::clear()
 	for (std::vector<wslDistribution>::iterator wdi = distributions.begin(); wdi != distributions.end(); ++wdi)
 		wdi->clear();
 }
+
+LRESULT CWSLTuxDlg::OnAreYouMe(WPARAM, LPARAM)
+{
+	return m_initialized ? UWM_ARE_YOU_ME : 0;
+} // CWSLTuxDlg::OnAreYouMe
+
+BOOL CALLBACK CWSLTuxDlg::searcher(HWND hWnd, LPARAM lParam)
+{
+	DWORD_PTR result;
+	LRESULT ok = ::SendMessageTimeout(hWnd,
+		UWM_ARE_YOU_ME,
+		0, 0,
+		SMTO_BLOCK |
+		SMTO_ABORTIFHUNG,
+		200,
+		&result);
+	if (ok == 0)
+		return TRUE; // ignore this and continue
+	if (result == UWM_ARE_YOU_ME)
+	{ /* found it */
+		HWND* target = (HWND*)lParam;
+		*target = hWnd;
+		return FALSE; // stop search
+	} /* found it */
+	return TRUE; // continue search
+} // CMyApp::searcher
 
 
 // This is used to run an external program, typically WSL.EXE
@@ -815,14 +845,14 @@ void CWSLTuxDlg::AddIconToSysTray()
 		NID.hIcon = this->m_hIcon_disabled;
 
 	NID.hWnd = this->m_hWnd;
-	NID.uID = WM_TRAY_ID;
+	NID.uID = UWM_TRAY_ID;
 	if (wslinfo.dists_running == 1)
 		oss << "1 distribution running\n" << wslinfo.procs_running << " processes running";
 	else
 		oss << wslinfo.dists_running << " distributions running\n" << wslinfo.procs_running << " processes running";
 
 	wcscpy_s(NID.szTip, oss.str().c_str());
-	NID.uCallbackMessage = WM_TRAY_MESSAGE;
+	NID.uCallbackMessage = UWM_TRAY_MESSAGE;
 	//in a timer:
 
 	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
@@ -845,7 +875,7 @@ void CWSLTuxDlg::UpdateSysTrayIcon()
 		NID.hIcon = this->m_hIcon_disabled;
 
 	NID.hWnd = this->m_hWnd;
-	NID.uID = WM_TRAY_ID;
+	NID.uID = UWM_TRAY_ID;
 	if (wslinfo.dists_running == 1)
 		oss << "1 distribution running\n" << wslinfo.procs_running << " processes running";
 	else
@@ -853,7 +883,7 @@ void CWSLTuxDlg::UpdateSysTrayIcon()
 
 	wcscpy_s(NID.szTip, oss.str().c_str());
 
-	NID.uCallbackMessage = WM_TRAY_MESSAGE;
+	NID.uCallbackMessage = UWM_TRAY_MESSAGE;
 
 	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
 	Shell_NotifyIcon(NIM_MODIFY, &NID);
@@ -865,7 +895,7 @@ void CWSLTuxDlg::RemIconFromSysTray()
 
 	memset(&NID, 0, sizeof(NID));
 	NID.hWnd = this->m_hWnd;
-	NID.uID = WM_TRAY_ID;
+	NID.uID = UWM_TRAY_ID;
 	Shell_NotifyIcon(NIM_DELETE, &NID);
 }
 
@@ -1026,6 +1056,37 @@ void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 // Initialize primary dialog -- this is basically our main()
 BOOL CWSLTuxDlg::OnInitDialog()
 {
+	bool AlreadyRunning;
+
+	HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE,
+		_T("WSLTUX-9A4D70DF-D007-4057-B2F8-A163A199CEB9"));
+
+	AlreadyRunning = (::GetLastError() == ERROR_ALREADY_EXISTS ||
+		::GetLastError() == ERROR_ACCESS_DENIED);
+
+	if (AlreadyRunning)
+	{ /* kill this */
+		HWND hOther = NULL;
+		EnumWindows(searcher, (LPARAM)&hOther);
+
+		if (hOther != NULL)
+		{ /* pop up */
+
+			// make sure we're not referencing ourself
+			if (hOther != this->m_hWnd)
+			{ /* restore */
+				::ShowWindow(hOther, SW_RESTORE);
+				::ShowWindow(hOther, SW_SHOW);
+				::BringWindowToTop(hOther);
+				::SetForegroundWindow(hOther);
+			} /* restore */
+		} /* pop up */
+
+		CDialogEx::OnCancel();	// exit dialog
+
+		return FALSE; // terminates the creation
+	}
+
 	CDialogEx::OnInitDialog();
 
 	// Add "About..." menu item to system menu.
@@ -1067,6 +1128,8 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	}
 
 	AddIconToSysTray();
+
+	m_initialized = true;
 
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }

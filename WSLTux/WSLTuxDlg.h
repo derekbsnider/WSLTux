@@ -74,6 +74,7 @@ protected:
 	WSLInfo wslinfo;
 	CString m_cmdline;
 	bool m_visible;
+	bool m_initialized = false;
 	HRESULT RunExternalProgram(CString cmd);
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
@@ -91,7 +92,6 @@ public:
 	HANDLE m_hChildStd_OUT_Wr = 0;
 	HANDLE m_hreadDataFromExtProgram = 0;
 
-	afx_msg void OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult);
 	bool GetWSLInfo();
 	void RefreshWSLInfo();
 	void PopulateWSLlist();
@@ -106,13 +106,16 @@ public:
 	bool GetDistributionStates();
 	CString WSLstopDistribution(CString& distro);
 	CString WSLstartDistribution(CString& distro);
+	static BOOL CALLBACK searcher(HWND hWnd, LPARAM lParam);
 
 	afx_msg void OnBnClickedOk();
-	afx_msg LRESULT OnTrayNotify(WPARAM wParam, LPARAM lParam);
 	afx_msg void OnBnClickedCancel();
 	afx_msg void OnClose();
 	afx_msg void OnBnClickedStop();
 	afx_msg void OnBnClickedStart();
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
+	afx_msg void OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult);
 	afx_msg void OnWindowPosChanging(WINDOWPOS* lpwndpos);
+	afx_msg LRESULT OnTrayNotify(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnAreYouMe(WPARAM, LPARAM);
 };
