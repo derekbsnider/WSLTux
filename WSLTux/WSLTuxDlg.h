@@ -64,16 +64,16 @@ public:
 	enum { IDD = IDD_WSLTUX_DIALOG };
 #endif
 
-	protected:
+protected:
 	virtual void DoDataExchange(CDataExchange* pDX);	// DDX/DDV support
-
 
 // Implementation
 protected:
 	HICON m_hIcon;
 	HICON m_hIcon_disabled;
 	WSLInfo wslinfo;
-
+	CString m_cmdline;
+	bool m_visible;
 	HRESULT RunExternalProgram(CString cmd);
 	// Generated message map functions
 	virtual BOOL OnInitDialog();
@@ -114,4 +114,5 @@ public:
 	afx_msg void OnBnClickedStop();
 	afx_msg void OnBnClickedStart();
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
+	afx_msg void OnWindowPosChanging(WINDOWPOS* lpwndpos);
 };

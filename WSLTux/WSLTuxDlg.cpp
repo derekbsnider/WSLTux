@@ -86,6 +86,12 @@ CWSLTuxDlg::CWSLTuxDlg(CWnd* pParent /*=nullptr*/)
 {
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	m_hIcon_disabled = AfxGetApp()->LoadIcon(IDI_TUXDISABLED);
+	m_cmdline = AfxGetApp()->m_lpCmdLine;
+
+	if (m_cmdline.Find(_T("--start-minimized")) != -1)
+		m_visible = false;
+	else
+		m_visible = true;
 }
 
 void CWSLTuxDlg::DoDataExchange(CDataExchange* pDX)
@@ -108,35 +114,9 @@ BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_STOP, &CWSLTuxDlg::OnBnClickedStop)
 	ON_BN_CLICKED(IDC_START, &CWSLTuxDlg::OnBnClickedStart)
 	ON_WM_TIMER()
+	ON_WM_WINDOWPOSCHANGING()
 END_MESSAGE_MAP()
 #pragma warning( pop )
-
-void getColumns(std::vector<CString>& columns, CString& cstr)
-{
-	std::string str = CT2A(cstr);
-	CString tcstr;
-	size_t pos, p2;
-
-	pos = str.find_first_not_of(' ');
-	tcstr = CString(str.substr(0, pos - 1).c_str());
-	columns.push_back(tcstr);
-	str = str.substr(pos);
-
-	while ((pos = str.find_first_of(' ')) != std::string::npos)
-	{
-		p2 = str.find_first_not_of(' ', pos);
-		if (p2 != std::string::npos)
-			pos = p2;
-		tcstr = CString(str.substr(0, pos - 1).c_str());
-		columns.push_back(tcstr);
-		str = str.substr(pos);
-	}
-	if (!str.empty())
-	{
-		tcstr = CString(str.c_str());
-		columns.push_back(tcstr);
-	}
-}
 
 
 void WSLInfo::clear()
@@ -757,53 +737,6 @@ bool CWSLTuxDlg::GetDistributionStates()
 }
 
 
-BOOL CWSLTuxDlg::OnInitDialog()
-{
-	CDialogEx::OnInitDialog();
-
-	// Add "About..." menu item to system menu.
-
-	// IDM_ABOUTBOX must be in the system command range.
-	ASSERT((IDM_ABOUTBOX & 0xFFF0) == IDM_ABOUTBOX);
-	ASSERT(IDM_ABOUTBOX < 0xF000);
-
-	CMenu* pSysMenu = GetSystemMenu(FALSE);
-	if (pSysMenu != nullptr)
-	{
-		BOOL bNameValid;
-		CString strAboutMenu;
-		bNameValid = strAboutMenu.LoadString(IDS_ABOUTBOX);
-		ASSERT(bNameValid);
-		if (!strAboutMenu.IsEmpty())
-		{
-			pSysMenu->AppendMenu(MF_SEPARATOR);
-			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
-		}
-	}
-
-	// Set the icon for this dialog.  The framework does this automatically
-	//  when the application's main window is not a dialog
-	SetIcon(m_hIcon, TRUE);		// Set big icon
-	SetIcon(m_hIcon, FALSE);		// Set small icon
-
-	// put column headings into the ClistCtrl
-	m_WSLlistCtrl.SetExtendedStyle(m_WSLlistCtrl.GetExtendedStyle() | LVS_EX_FULLROWSELECT);
-	m_WSLlistCtrl.InsertColumn(0, _T(""), LVCFMT_LEFT, 20);
-	m_WSLlistCtrl.InsertColumn(1, _T("Name"), LVCFMT_LEFT, 250);
-	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
-	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
-
-	if (GetWSLInfo() && wslinfo.distributions.size() )
-	{
-		PopulateWSLlist();
-		StartTimer();
-	}
-
-	AddIconToSysTray();
-
-	return TRUE;  // return TRUE  unless you set the focus to a control
-}
-
 void CWSLTuxDlg::OnSysCommand(UINT nID, LPARAM lParam)
 {
 	if ((nID & 0xFFF0) == IDM_ABOUTBOX)
@@ -980,7 +913,11 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 	switch (uMsg)
 	{
 		case WM_LBUTTONDOWN:
+			m_visible = true;
+			this->ShowWindow(SW_RESTORE);
 			this->ShowWindow(SW_SHOW);
+			this->BringWindowToTop();
+			this->SetForegroundWindow();
 			break;
 		case WM_CONTEXTMENU:
 		case WM_RBUTTONDOWN:
@@ -1084,4 +1021,60 @@ void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 	RefreshWSLInfo();
 
 	SetTimer(nIDEvent, TIMER_INTERVAL, NULL);
+}
+
+// Initialize primary dialog -- this is basically our main()
+BOOL CWSLTuxDlg::OnInitDialog()
+{
+	CDialogEx::OnInitDialog();
+
+	// Add "About..." menu item to system menu.
+
+	// IDM_ABOUTBOX must be in the system command range.
+	ASSERT((IDM_ABOUTBOX & 0xFFF0) == IDM_ABOUTBOX);
+	ASSERT(IDM_ABOUTBOX < 0xF000);
+
+	CMenu* pSysMenu = GetSystemMenu(FALSE);
+	if (pSysMenu != nullptr)
+	{
+		BOOL bNameValid;
+		CString strAboutMenu;
+		bNameValid = strAboutMenu.LoadString(IDS_ABOUTBOX);
+		ASSERT(bNameValid);
+		if (!strAboutMenu.IsEmpty())
+		{
+			pSysMenu->AppendMenu(MF_SEPARATOR);
+			pSysMenu->AppendMenu(MF_STRING, IDM_ABOUTBOX, strAboutMenu);
+		}
+	}
+
+	// Set the icon for this dialog.  The framework does this automatically
+	//  when the application's main window is not a dialog
+	SetIcon(m_hIcon, TRUE);		// Set big icon
+	SetIcon(m_hIcon, FALSE);		// Set small icon
+
+	// put column headings into the ClistCtrl
+	m_WSLlistCtrl.SetExtendedStyle(m_WSLlistCtrl.GetExtendedStyle() | LVS_EX_FULLROWSELECT);
+	m_WSLlistCtrl.InsertColumn(0, _T(""), LVCFMT_LEFT, 20);
+	m_WSLlistCtrl.InsertColumn(1, _T("Name"), LVCFMT_LEFT, 250);
+	m_WSLlistCtrl.InsertColumn(2, _T("State"), LVCFMT_LEFT, 90);
+	m_WSLlistCtrl.InsertColumn(3, _T("Version"), LVCFMT_LEFT, 60);
+
+	if (GetWSLInfo() && wslinfo.distributions.size())
+	{
+		PopulateWSLlist();
+		StartTimer();
+	}
+
+	AddIconToSysTray();
+
+	return TRUE;  // return TRUE  unless you set the focus to a control
+}
+
+
+void CWSLTuxDlg::OnWindowPosChanging(WINDOWPOS* lpwndpos)
+{
+	if (!m_visible)
+		lpwndpos->flags &= ~SWP_SHOWWINDOW;
+	CDialogEx::OnWindowPosChanging(lpwndpos);
 }
