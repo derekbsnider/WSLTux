@@ -5,6 +5,7 @@
 // 
 // (c)2022 Derek Snider (DSD Software)
 //
+// Some code and ideas were taken from: http://www.flounder.com/
 
 
 #include "pch.h"
@@ -20,6 +21,7 @@
 #include "wslapi.h"
 #include <io.h>
 #include "console_pipe.h"
+#include "WslApiLoader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <locale>         // std::wstring_convert
@@ -30,7 +32,7 @@
 #include <psapi.h>
 
 typedef std::codecvt_utf8<wchar_t> ccvt;
-
+WSLInfo* _wslinfo = NULL;
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -90,6 +92,7 @@ CWSLTuxDlg::CWSLTuxDlg(CWnd* pParent /*=nullptr*/)
 	m_hIcon = AfxGetApp()->LoadIcon(IDR_MAINFRAME);
 	m_hIcon_disabled = AfxGetApp()->LoadIcon(IDI_TUXDISABLED);
 	m_cmdline = AfxGetApp()->m_lpCmdLine;
+	_wslinfo = &this->wslinfo;
 
 	if (m_cmdline.Find(_T("--start-minimized")) != -1)
 		m_visible = false;
@@ -122,6 +125,17 @@ BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 END_MESSAGE_MAP()
 #pragma warning( pop )
 
+WSLInfo::~WSLInfo()
+{
+	if (wiMutex)
+		CloseHandle(wiMutex);
+}
+
+void WSLInfo::init()
+{
+	clear();
+	wiMutex = CreateMutex(NULL, FALSE, NULL);
+}
 
 void WSLInfo::clear()
 {
@@ -134,6 +148,34 @@ void WSLInfo::clear()
 	for (std::vector<wslDistribution>::iterator wdi = distributions.begin(); wdi != distributions.end(); ++wdi)
 		wdi->clear();
 }
+
+bool WSLInfo::lock()
+{
+	DWORD dwCount = 0, dwWaitResult;
+
+	while (dwCount < 20)
+	{
+		dwWaitResult = WaitForSingleObject(wiMutex, 5000);
+		switch (dwWaitResult)
+		{
+			case WAIT_OBJECT_0:
+				++dwCount;
+				return true;
+			case WAIT_ABANDONED:
+				return false;
+		}
+	}
+
+	return true;
+}
+
+bool WSLInfo::unlock()
+{
+	if (ReleaseMutex(wiMutex))
+		return true;
+	return false;
+}
+
 
 LRESULT CWSLTuxDlg::OnAreYouMe(WPARAM, LPARAM)
 {
@@ -161,7 +203,7 @@ BOOL CALLBACK CWSLTuxDlg::searcher(HWND hWnd, LPARAM lParam)
 	return TRUE; // continue search
 } // CMyApp::searcher
 
-
+#if 0
 // This is used to run an external program, typically WSL.EXE
 // The output of the program will be written to this->ProgramOutput
 // A window will not be displayed for the application
@@ -249,15 +291,75 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 
 	return S_OK;
 }
+#endif
 
-// Terminate a distrubition using WSL.EXE, does not bring up a window
+bool TerminateProcessID(DWORD processID)
+{
+	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+
+	if (!hProcess)
+	{
+#ifdef _DEBUG
+		OutputDebugString(_T("OpenProcess failed\n"));
+#endif
+		return false;
+	}
+
+	bool terminated = TerminateProcess(hProcess, 0);
+
+#ifdef _DEBUG
+	if ( !terminated )
+	OutputDebugString(_T("TerminateProcess failed\n"));
+#endif
+
+	CloseHandle(hProcess);
+
+	return terminated;
+}
+
+// Terminate a distribution by terminating all processes associated with it
+CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
+{
+	std::vector<wslDistribution>::iterator wdi;
+	CString msg;
+
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+		if (wdi->name == distro)
+			break;
+
+	if (wdi == wslinfo.distributions.end())
+	{
+		msg.Format(_T("Distribution '%s' not found."), distro.GetString());
+		return msg;
+	}
+
+	if ( wdi->pids.empty() )
+	{
+		msg.Format(_T("Distribution '%s' not running."), distro.GetString());
+		return msg;
+	}
+
+	std::vector<DWORD>::iterator pi;
+	int cnt = 0;
+
+	for (pi = wdi->pids.begin(); pi != wdi->pids.end(); ++pi)
+		if (TerminateProcessID(*pi))
+			++cnt;
+
+	msg.Format(_T("Distribution '%s' %d processes terminated."), distro.GetString(), cnt);
+
+	return msg;
+}
+
+#if 0
+// Terminate a distribution using WSL.EXE, does not bring up a window
 CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 {
 	CString cmd("\\Windows\\System32\\wsl.exe -t ");
 
 	cmd.Append(distro);
 
-	if ( RunExternalProgram(cmd) != S_OK )
+	if (RunExternalProgram(cmd) != S_OK)
 		return _T("Failed to execute command");
 
 	if (ProgramOutput.GetLength() > 4)
@@ -267,7 +369,121 @@ CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 
 	return cmd;
 }
+#endif
 
+DWORD WINAPI WSLstart(LPVOID lpParam)
+{
+	if (!_wslinfo)
+	{
+		AfxMessageBox(_T("_wslinfo null!"));
+		return 0;
+	}
+	CString msg;
+	size_t dist = (size_t)lpParam;
+
+	if (dist >= _wslinfo->distributions.size())
+	{
+		msg.Format(_T("Distribution index out of bounds: %llu >= %llu"), dist, _wslinfo->distributions.size());
+		AfxMessageBox(msg);
+		return 0;
+	}
+
+	WslApiLoader g_wslApi(_wslinfo->distributions[dist].wsname);
+	static DWORD exitCode;
+	HRESULT hin = g_wslApi.WslLaunchInteractive(NULL, false, &exitCode);
+
+	ExitThread(hin);
+
+	return 0;
+}
+
+
+// Start a distribution using WSL.EXE, this should bring up a terminal window
+CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
+{
+	StopTimer();
+	HRESULT hin = S_OK;
+	HANDLE tid;
+	DWORD dwTid;
+	size_t dist;
+	CString ret = _T("Test complete");
+
+	if (!wslinfo.lock())
+	{
+		ret = _T("Failed to lock");
+		return ret;
+	}
+
+	for (dist = 0; dist < wslinfo.distributions.size(); ++dist )
+		if (wslinfo.distributions[dist].name == distro)
+			break;
+
+	if ( dist >= wslinfo.distributions.size() )
+	{
+		ret.Format(_T("Cannot find distribution '%s' in distribution list"), distro.GetString());
+		StartTimer();
+		wslinfo.unlock();
+		return ret;
+	}
+
+	tid = CreateThread(NULL, 0, WSLstart, (LPVOID)dist, 0, &dwTid);
+	StartTimer();
+	wslinfo.unlock();
+
+	if (!tid)
+	{
+		ret.Format(_T("Distribution '%s' CreateThread failed!"), distro.GetString());
+		return ret;
+	}
+
+	if (hin == S_OK)
+	{
+		ret.Format(_T("Distribution '%s' started."), distro.GetString());
+		return ret;
+	}
+
+	ret.Format(_T("Distribution '%s' failed to start: "), distro.GetString());
+	switch (hin)
+	{
+		default:
+			ret.Append(_T("Unspecified failure"));
+			break;
+		case E_NOTIMPL:
+			ret.Append(_T("Not implemented"));
+			break;
+		case E_NOINTERFACE:
+			ret.Append(_T("No such interface supported"));
+			break;
+		case E_POINTER:
+			ret.Append(_T("Invalid reference"));
+			break;
+		case E_ABORT:
+			ret.Append(_T("Operation aborted"));
+			break;
+		case E_FAIL:
+			ret.Append(_T("Unspecified failure"));
+			break;
+		case E_UNEXPECTED:
+			ret.Append(_T("Unexpected failure"));
+			break;
+		case E_ACCESSDENIED:
+			ret.Append(_T("Access denied"));
+			break;
+		case E_HANDLE:
+			ret.Append(_T("Invalid handle"));
+			break;
+		case E_OUTOFMEMORY:
+			ret.Append(_T("Out of memory"));
+			break;
+		case E_INVALIDARG:
+			ret.Append(_T("Invalid argument"));
+			break;
+	}
+
+	return ret;
+}
+
+#if 0
 // Start a distribution using WSL.EXE, this should bring up a terminal window
 CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 {
@@ -286,48 +502,57 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 	cmd.Format(_T("Distribution '%s' failed to start: "), distro.GetString());
 	switch ((INT_PTR)hin)
 	{
-		default:
-			cmd.Append(_T("OS error"));
-			break;
-		case ERROR_FILE_NOT_FOUND:
-			cmd.Append(_T("WSL.EXE not found"));
-			break;
-		case ERROR_BAD_FORMAT:
-			cmd.Append(_T("WSL.EXE is invalid"));
-			break;
-		case SE_ERR_ACCESSDENIED:
-			cmd.Append(_T("Access Denied"));
-			break;
-		case SE_ERR_OOM:
-			cmd.Append(_T("Out of Memory"));
-			break;
-		case SE_ERR_SHARE:
-			cmd.Append(_T("Sharing Violation"));
-			break;
+	default:
+		cmd.Append(_T("OS error"));
+		break;
+	case ERROR_FILE_NOT_FOUND:
+		cmd.Append(_T("WSL.EXE not found"));
+		break;
+	case ERROR_BAD_FORMAT:
+		cmd.Append(_T("WSL.EXE is invalid"));
+		break;
+	case SE_ERR_ACCESSDENIED:
+		cmd.Append(_T("Access Denied"));
+		break;
+	case SE_ERR_OOM:
+		cmd.Append(_T("Out of Memory"));
+		break;
+	case SE_ERR_SHARE:
+		cmd.Append(_T("Sharing Violation"));
+		break;
 	}
 
 	return cmd;
 }
-
+#endif
 
 
 // Populate the WSLInfo (this->wslinfo) data structure
 bool CWSLTuxDlg::GetWSLInfo()
 {
-	StopTimer();
+#ifdef _DEBUG
+	OutputDebugString(_T("GetWSLInfo() START\n"));
+#endif
+
 	// Get the list of distributions from the registry
 	if (!GetDistributionList())
 	{
+#ifdef _DEBUG
 		OutputDebugString(_T("GetDistributionList() failed!\n"));
+#endif
+		wslinfo.unlock();
 		return false;
 	}
 	// Walk the process list for wslhost.exe processes matching distributions
 	if (!GetDistributionStates())
 	{
+#ifdef _DEBUG
 		OutputDebugString(_T("GetDistributionStates() failed!\n"));
+#endif
+		wslinfo.unlock();
 		return false;
 	}
-	StartTimer();
+
 	return true;
 }
 
@@ -339,10 +564,21 @@ void CWSLTuxDlg::PopulateWSLlist()
 	int i = 0;
 	std::vector<CString>::iterator vsi, vsj;
 	std::vector<wslDistribution>::iterator wdi;
-	int nIndex;
+	int nIndex, oIndex;
+
+	oIndex = m_WSLlistCtrl.GetSelectionMark();
+#ifdef _DEBUG
+	cstr.Format(_T("GetSelectionMark: %d\n"), oIndex);
+	OutputDebugString(cstr.GetString());
+#endif
+
 
 	if (m_WSLlistCtrl.DeleteAllItems() == 0)
+	{
+#ifdef _DEBUG
 		OutputDebugString(_T("DeleteAllItems Failed!"));
+#endif
+	}
 
 	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
 	{
@@ -357,16 +593,21 @@ void CWSLTuxDlg::PopulateWSLlist()
 		{
 			cstr.Format(_T("Running (%llu)"), wdi->pids.size());
 			m_WSLlistCtrl.SetItemText(nIndex, 2, cstr);
-//			m_WSLlistCtrl.SetItemText(nIndex, 2, _T("Running"));
+			//			m_WSLlistCtrl.SetItemText(nIndex, 2, _T("Running"));
 		}
 		else
 			m_WSLlistCtrl.SetItemText(nIndex, 2, _T("Stopped"));
-	
+
 		cstr.Format(_T("%d"), wdi->version);
 		m_WSLlistCtrl.SetItemText(nIndex, 3, cstr);
 	}
-}
 
+	if (oIndex != -1)
+	{
+		m_WSLlistCtrl.SetSelectionMark(oIndex);
+		m_WSLlistCtrl.SetItemState(oIndex, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+	}
+}
 
 void CWSLTuxDlg::StopTimer()
 {
@@ -377,8 +618,7 @@ void CWSLTuxDlg::StopTimer()
 
 void CWSLTuxDlg::StartTimer()
 {
-	//if ( wslinfo.rows )
-		m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
+	m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
 }
 
 
@@ -521,14 +761,18 @@ public:
 bool CWSLTuxDlg::GetDistributionList()
 {
 	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
+#ifdef _DEBUG
 	CString DbgString;
+#endif
 	DWORD i;
 
 	MyRegInfo reginfo(HKEY_CURRENT_USER, LxssKey);
 
 	if ( reginfo.retCode != ERROR_SUCCESS )
 	{
+#ifdef _DEBUG
 		OutputDebugString(_T("RegOpenKeyEx LxssKey failed!\n"));
+#endif
 		return false;
 	}
 
@@ -536,56 +780,66 @@ bool CWSLTuxDlg::GetDistributionList()
 	if (reginfo.cValues && (reginfo.QueryValueSZ(L"DefaultDistribution") == ERROR_SUCCESS))
 	{
 		lsxxDefaultDistribution = reginfo.szvalue();
+#ifdef _DEBUG
 		DbgString.Format(_T("DefaultDistribution: %s\n"), lsxxDefaultDistribution.GetString());
 		OutputDebugString(DbgString.GetString());
+#endif
 		if (reginfo.QueryValueDW(L"DefaultVersion") == ERROR_SUCCESS)
 			lsxxDefaultVersion = reginfo.dwvalue();
 	}
+#ifdef _DEBUG
 	else
 		OutputDebugString(_T("Could not find default distribution\n"));
-
+#endif
 	wslinfo.distributions.clear();
 
 	// build distribution list
 	if ( reginfo.cSubKeys )
 	{
+#ifdef _DEBUG
 		DbgString.Format(_T("\nNumber of subkeys : % d\n"), reginfo.cSubKeys);
 		OutputDebugString(DbgString);
-
+#endif
 		for (i = 0; i < reginfo.cSubKeys; i++)
 		{
 			if ( reginfo.EnumKey(i) == ERROR_SUCCESS )
 			{
 				CString csDistKey = LxssKey + "\\" + reginfo.key();
-
+#ifdef _DEBUG
 				DbgString.Format(_T("(%d) distribution: %s\n"), i + 1, reginfo.key());
 				OutputDebugString(DbgString.GetString());
-
+#endif
 				MyRegInfo distinfo(HKEY_CURRENT_USER,csDistKey);
 
 				if ( distinfo.retCode != ERROR_SUCCESS )
 				{
+#ifdef _DEBUG
 					OutputDebugString(_T("Failed to open dist key\n"));
+#endif
 					continue;
 				}
 
 				if (!distinfo.cValues)
 				{
+#ifdef _DEBUG
 					OutputDebugString(_T("no cvalues\n"));
+#endif
 					continue;
 				}
 
 				if ( distinfo.QueryValueSZ(L"DistributionName") != ERROR_SUCCESS )
 				{
+#ifdef _DEBUG
 					OutputDebugString(_T("Failed to get distribution name\n"));
+#endif
 					continue;
 				}
 
 				wslDistribution dist;
-
+#ifdef _DEBUG
 				DbgString.Format(_T("... DistributionName: %s\n"), distinfo.szvalue());
 				OutputDebugString(DbgString.GetString());
-
+#endif
 				dist.regkey = reginfo.key();
 				dist.name = distinfo.szvalue();
 
@@ -602,9 +856,10 @@ bool CWSLTuxDlg::GetDistributionList()
 			}
 		}
 	}
+#ifdef _DEBUG
 	else
 		OutputDebugString(_T("Could not find any distributions!\n"));
-
+#endif
 	return true;
 }
 
@@ -612,14 +867,18 @@ bool CWSLTuxDlg::GetDistributionList()
 int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 {
 	TCHAR szProcessName[MAX_PATH] = { 0 };
+#ifdef _DEBUG
 	CString dbg;
+#endif
 
 	HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processID);
 
 	if (!hProcess)
 	{
+#if 0 //def _DEBUG
 		dbg.Format(_T("OpenProcess(%d) failed\n"), processID);
 		OutputDebugString(dbg.GetString());
+#endif
 		return -1;
 	}
 
@@ -628,8 +887,10 @@ int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 
 	if (!EnumProcessModules(hProcess, &hMod, sizeof(hMod), &cbNeeded))
 	{
+#ifdef _DEBUG
 		dbg.Format(_T("EnumProcessModules(%d) failed\n"), processID);
 		OutputDebugString(dbg.GetString());
+#endif
 		CloseHandle(hProcess);
 		return -1;
 	}
@@ -643,16 +904,18 @@ int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 		CloseHandle(hProcess);
 		return 0;
 	}
-
+#ifdef _DEBUG
 	OutputDebugString(_T("Got wslhost.exe!\n"));
-
+#endif
 	PROCESS_BASIC_INFORMATION pbi;
 	NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), nullptr);
 
 	if (!NT_SUCCESS(status))
 	{
+#ifdef _DEBUG
 		dbg.Format(_T("NtQueryInfomationProcess Failed\n"));
 		OutputDebugString(dbg.GetString());
+#endif
 		CloseHandle(hProcess);
 		return -1;
 	}
@@ -706,11 +969,11 @@ int GetWSLhosts(std::map<DWORD, CString>& wslhosts)
 	for (i = 0; i < cProcesses; i++)
 		if (aProcesses[i])
 			AddWSLhost(aProcesses[i], wslhosts);
-
+#ifdef _DEBUG
 	CString dbg;
 	dbg.Format(_T("GetWSLhosts() total processes: %d\n"), cProcesses);
 	OutputDebugString(dbg.GetString());
-
+#endif
 	return 0;
 }
 
@@ -721,17 +984,20 @@ bool CWSLTuxDlg::GetDistributionStates()
 	std::map<DWORD, CString> wslhosts;
 	std::map<DWORD, CString>::iterator wi;
 	std::vector<wslDistribution>::iterator wdi;
+#ifdef _DEBUG
 	CString dbg;
-
+#endif
 	if (GetWSLhosts(wslhosts) == -1)
 	{
+#ifdef _DEBUG
 		OutputDebugString(_T("GetWSLhosts() failed!\n"));
+#endif
 		return false;
 	}
-
+#ifdef _DEBUG
 	dbg.Format(_T("wslhosts.size() %llu\n"), wslhosts.size());
 	OutputDebugString(dbg.GetString());
-
+#endif
 	wslinfo.clear();
 
 	// clear distribution pid lists
@@ -741,14 +1007,18 @@ bool CWSLTuxDlg::GetDistributionStates()
 	// grab pids matching distributions
 	for (wi = wslhosts.begin(); wi != wslhosts.end(); ++wi)
 	{
+#ifdef _DEBUG
 		dbg.Format(_T("Evaluating wslhost %d: %s\n"), wi->first, wi->second.GetString());
 		OutputDebugString(dbg.GetString());
+#endif
 		for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
 		{
 			if (wi->second.Find(wdi->regkey) != -1)
 			{
+#ifdef _DEBUG
 				dbg.Format(_T("Found %s in %s\n"), wdi->regkey.GetString(), wi->second.GetString());
 				OutputDebugString(dbg.GetString());
+#endif
 				wdi->pids.push_back(wi->first);
 			}
 		}
@@ -826,12 +1096,14 @@ void CWSLTuxDlg::OnLvnItemchangedList1(NMHDR* pNMHDR, LRESULT* pResult)
 	*pResult = 0;
 	CWnd* label = GetDlgItem(IDC_STATIC2);
 	label->SetWindowTextW(msg);
-	if (wslinfo.rows)
-		RestartTimer();
+	RestartTimer();
 }
 
 void CWSLTuxDlg::AddIconToSysTray()
 {
+	if (!wslinfo.lock())
+		return;
+
 	NOTIFYICONDATA NID;
 	std::wstringstream oss;
 
@@ -858,11 +1130,15 @@ void CWSLTuxDlg::AddIconToSysTray()
 	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
 	Shell_NotifyIcon(NIM_ADD, &NID);
 
+	wslinfo.unlock();
 	//CDialogEx::OnOK();
 }
 
 void CWSLTuxDlg::UpdateSysTrayIcon()
 {
+	if (!wslinfo.lock())
+		return;
+
 	NOTIFYICONDATA NID;
 	std::wstringstream oss;
 
@@ -887,6 +1163,7 @@ void CWSLTuxDlg::UpdateSysTrayIcon()
 
 	NID.uFlags = NID.uFlags | NIF_ICON | NIF_TIP | NIF_MESSAGE;
 	Shell_NotifyIcon(NIM_MODIFY, &NID);
+	wslinfo.unlock();
 }
 
 void CWSLTuxDlg::RemIconFromSysTray()
@@ -908,6 +1185,10 @@ void CAboutDlg::OnBnClickedOk()
 
 void CWSLTuxDlg::RefreshWSLInfo()
 {
+	if (!wslinfo.lock())
+		return;
+	StopTimer();
+
 	size_t prev_running = wslinfo.dists_running;
 
 	if (GetWSLInfo())
@@ -916,22 +1197,26 @@ void CWSLTuxDlg::RefreshWSLInfo()
 		if (wslinfo.dists_running != prev_running)
 			UpdateSysTrayIcon();
 	}
+
+	wslinfo.unlock();
+	StartTimer();
 }
 
+// Refresh button
 void CWSLTuxDlg::OnBnClickedOk()
 {
 	RefreshWSLInfo();
 }
 
+// Cancel button
 void CWSLTuxDlg::OnBnClickedCancel()
 {
-	// TODO: Add your control notification handler code here
-
+	// just hide the window
 	this->ShowWindow(SW_HIDE);
-//	CDialogEx::OnCancel();
+//	CDialogEx::OnCancel(); <-- this would terminate the app
 }
 
-
+// Handle events from interacting with the system tray icon
 LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 {
 	UNREFERENCED_PARAMETER(wParam);
@@ -974,12 +1259,14 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
+// Shutdown the application
 void CWSLTuxDlg::Shutdown()
 {
 	RemIconFromSysTray();
 	CDialogEx::OnCancel();
 }
 
+// Clicking the X in corner just hides the window
 void CWSLTuxDlg::OnClose()
 {
 	// TODO: Add your message handler code here and/or call default
@@ -988,6 +1275,7 @@ void CWSLTuxDlg::OnClose()
 }
 
 
+// Stop a distribution from running
 void CWSLTuxDlg::OnBnClickedStop()
 {
 	POSITION pos = m_WSLlistCtrl.GetFirstSelectedItemPosition();
@@ -1015,6 +1303,7 @@ void CWSLTuxDlg::OnBnClickedStop()
 }
 
 
+// Start a distribution
 void CWSLTuxDlg::OnBnClickedStart()
 {
 	POSITION pos = m_WSLlistCtrl.GetFirstSelectedItemPosition();
@@ -1026,10 +1315,21 @@ void CWSLTuxDlg::OnBnClickedStart()
 	}
 
 	int nItem = m_WSLlistCtrl.GetNextSelectedItem(pos);
+	std::vector<wslDistribution>::iterator wdi;
 	CString distro = m_WSLlistCtrl.GetItemText(nItem, 1);
 	CString prompt;
 
-	prompt.Format(_T("Start %s. Are you sure?"), distro.GetString());
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+		if (wdi->name == distro)
+			break;
+
+	if (wdi == wslinfo.distributions.end())
+		return;
+
+	if (wdi->pids.size())
+		prompt.Format(_T("%s is already running. Do want to to start another session?"), distro.GetString());
+	else
+		prompt.Format(_T("Start %s. Are you sure?"), distro.GetString());
 
 	if (AfxMessageBox(prompt, MB_YESNO) != IDYES)
 		return;
@@ -1038,10 +1338,11 @@ void CWSLTuxDlg::OnBnClickedStart()
 
 	RefreshWSLInfo();
 
-	AfxMessageBox(prompt);
+//	AfxMessageBox(prompt);
 }
 
 
+// timer event to refresh the app information
 void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 {
 	if (!KillTimer(nIDEvent))
@@ -1056,6 +1357,8 @@ void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 // Initialize primary dialog -- this is basically our main()
 BOOL CWSLTuxDlg::OnInitDialog()
 {
+	// check if we are already running an instance
+	// from http://www.flounder.com/nomultiples.htm
 	bool AlreadyRunning;
 
 	HANDLE hMutexOneInstance = ::CreateMutex(NULL, FALSE,
@@ -1134,7 +1437,8 @@ BOOL CWSLTuxDlg::OnInitDialog()
 	return TRUE;  // return TRUE  unless you set the focus to a control
 }
 
-
+// used to hide the app dialog on start
+// from https://www.codeproject.com/Articles/1724/Some-handy-dialog-box-tricks-tips-and-workarounds
 void CWSLTuxDlg::OnWindowPosChanging(WINDOWPOS* lpwndpos)
 {
 	if (!m_visible)

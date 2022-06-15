@@ -5,6 +5,7 @@
 #pragma once
 
 #include <vector>
+#include <string>
 
 class wslDistribution
 {
@@ -12,6 +13,7 @@ public:
 	CString regkey;
 	CString name;
 	CString packagefamilyname;
+	std::wstring wsname;
 	DWORD version;
 	DWORD state;
 	DWORD flags;
@@ -29,17 +31,22 @@ public:
 		: regkey(d.regkey), name(d.name), packagefamilyname(d.packagefamilyname),
 		  version(d.version), state(d.state), flags(d.flags), uid(d.uid)
 	{
+		wsname = name;
 	}
 	wslDistribution(CString k, CString n, DWORD v) : regkey(k), name(n), version(v)
 	{
 		state = 0;
 		flags = 0;
 		uid = 0;
+		wsname = name;
 	}
 };
 
 class WSLInfo
 {
+protected:
+	HANDLE wiMutex;
+	void init();
 public:
 	int rows;
 	size_t dists_running;
@@ -47,8 +54,11 @@ public:
 	std::vector<CString> columns;
 	std::vector<CString> vcol[10];
 	std::vector<wslDistribution> distributions;
+	bool lock();
+	bool unlock();
 	void clear();
-	WSLInfo() { clear(); }
+	WSLInfo() { init(); }
+    ~WSLInfo();
 };
 
 
