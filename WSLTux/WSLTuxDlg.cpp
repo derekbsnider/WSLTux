@@ -203,7 +203,7 @@ BOOL CALLBACK CWSLTuxDlg::searcher(HWND hWnd, LPARAM lParam)
 	return TRUE; // continue search
 } // CMyApp::searcher
 
-#if 0
+#if 1
 // This is used to run an external program, typically WSL.EXE
 // The output of the program will be written to this->ProgramOutput
 // A window will not be displayed for the application
@@ -295,7 +295,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 
 bool TerminateProcessID(DWORD processID)
 {
-	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS | PROCESS_TERMINATE, FALSE, processID);
 
 	if (!hProcess)
 	{
@@ -317,6 +317,7 @@ bool TerminateProcessID(DWORD processID)
 	return terminated;
 }
 
+#if 0
 // Terminate a distribution by terminating all processes associated with it
 CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 {
@@ -350,8 +351,7 @@ CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 
 	return msg;
 }
-
-#if 0
+#else
 // Terminate a distribution using WSL.EXE, does not bring up a window
 CString CWSLTuxDlg::WSLstopDistribution(CString& distro)
 {
