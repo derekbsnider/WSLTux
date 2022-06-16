@@ -41,8 +41,10 @@ WSLInfo* _wslinfo = NULL;
 #define UWM_TRAY_ID			(WM_USER + 0x2)
 #define UWM_TRAY_MESSAGE	(WM_USER + 0x100)
 #define IDT_MINUTE_TIMER	(WM_USER + 0x200)
+#define IDT_CLICK_TIMER		(WM_USER + 0x201)
 
 #define TIMER_INTERVAL 10000
+#define CLICK_INTERVAL 250
 #define MAX_KEY_LENGTH 256
 #define MAX_VALUE_NAME 16383
 
@@ -414,9 +416,16 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 		return ret;
 	}
 
-	for (dist = 0; dist < wslinfo.distributions.size(); ++dist )
+	for (dist = 0; dist < wslinfo.distributions.size(); ++dist)
+	{
 		if (wslinfo.distributions[dist].name == distro)
 			break;
+		if (!distro.Compare(L"__default__") && !lsxxDefaultDistribution.Compare(wslinfo.distributions[dist].regkey))
+		{
+			distro = wslinfo.distributions[dist].name;
+			break;
+		}
+	}
 
 	if ( dist >= wslinfo.distributions.size() )
 	{
@@ -543,11 +552,24 @@ bool CWSLTuxDlg::GetWSLInfo()
 		wslinfo.unlock();
 		return false;
 	}
-	// Walk the process list for wslhost.exe processes matching distributions
+
+	wslinfo.clear();
+#if 0
+	// Get which distributions are running
 	if (!GetDistributionStates())
 	{
 #ifdef _DEBUG
 		OutputDebugString(_T("GetDistributionStates() failed!\n"));
+#endif
+		wslinfo.unlock();
+		return false;
+	}
+#endif
+	// Walk the process list for wslhost.exe processes matching distributions
+	if (!GetDistributionProcs())
+	{
+#ifdef _DEBUG
+		OutputDebugString(_T("GetDistributionProcs() failed!\n"));
 #endif
 		wslinfo.unlock();
 		return false;
@@ -627,6 +649,27 @@ void CWSLTuxDlg::RestartTimer()
 	StopTimer();
 	StartTimer();
 }
+
+void CWSLTuxDlg::StartClickTimer()
+{
+	m_clickTimer = SetTimer(IDT_CLICK_TIMER, CLICK_INTERVAL, NULL);
+	OutputDebugString(L"StartClickTimer\n");
+}
+
+void CWSLTuxDlg::StopClickTimer()
+{
+	if (m_clickTimer)
+	{
+		OutputDebugString(L"StopClickTimer -- killing timer\n");
+		KillTimer(m_clickTimer);
+	}
+	else
+	{
+		OutputDebugString(L"StopClickTimer\n");
+	}
+	m_clicks = 0;
+}
+
 
 
 class MyRegInfo
@@ -851,6 +894,8 @@ bool CWSLTuxDlg::GetDistributionList()
 					dist.uid = distinfo.dwvalue();
 				if (distinfo.QueryValueSZ(L"PackageFamilyName") == ERROR_SUCCESS)
 					dist.packagefamilyname = distinfo.szvalue();
+				if (distinfo.QueryValueSZ(L"BasePath") == ERROR_SUCCESS)
+					dist.basepath = distinfo.szvalue();
 
 				wslinfo.distributions.push_back(dist);
 			}
@@ -977,9 +1022,59 @@ int GetWSLhosts(std::map<DWORD, CString>& wslhosts)
 	return 0;
 }
 
+// saw this technique in LxRunOffline, but it doesn't seem to work reliably
+bool distribution_is_running(CString& basepath)
+{
+	CString vfs = basepath;
+	CString msg;
+
+	if (vfs[0] == '\\' && vfs[1] == '\\')
+		vfs = vfs.Mid(4);
+
+	vfs.Append(L"\\ext4.vhdx");
+
+	HANDLE hFile = CreateFile(vfs, GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		DWORD err = GetLastError();
+
+//		msg.Format(_T("CreateFile(%s) failed with err %d"), vfs, err);
+//		AfxMessageBox(msg);
+
+		switch (err)
+		{
+			default:
+				break;
+			case ERROR_FILE_NOT_FOUND:
+			case ERROR_PATH_NOT_FOUND:
+				return false;
+		}
+
+		return true;
+	}
+
+	CloseHandle(hFile);
+
+	return false;
+}
+
+// check which distributions are currently running 
+bool CWSLTuxDlg::GetDistributionStates()
+{
+	std::vector<wslDistribution>::iterator wdi;
+	CString msg;
+
+	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
+		wdi->running = distribution_is_running(wdi->basepath);
+
+	return true;
+}
+
 
 // search for wslhost.exe processes with --distro-id matching distributions
-bool CWSLTuxDlg::GetDistributionStates()
+// to build a list of associated process ids
+bool CWSLTuxDlg::GetDistributionProcs()
 {
 	std::map<DWORD, CString> wslhosts;
 	std::map<DWORD, CString>::iterator wi;
@@ -998,7 +1093,6 @@ bool CWSLTuxDlg::GetDistributionStates()
 	dbg.Format(_T("wslhosts.size() %llu\n"), wslhosts.size());
 	OutputDebugString(dbg.GetString());
 #endif
-	wslinfo.clear();
 
 	// clear distribution pid lists
 	for (wdi = wslinfo.distributions.begin(); wdi != wslinfo.distributions.end(); ++wdi)
@@ -1224,15 +1318,18 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 
 	UINT uMsg = (UINT)lParam;
 	const int IDM_EXIT = 100;
+	CString defaultdist = L"__default__";
 
 	switch (uMsg)
 	{
+
 		case WM_LBUTTONDOWN:
-			m_visible = true;
-			this->ShowWindow(SW_RESTORE);
-			this->ShowWindow(SW_SHOW);
-			this->BringWindowToTop();
-			this->SetForegroundWindow();
+			if (++m_clicks == 1)
+				StartClickTimer();
+			break;
+		case WM_LBUTTONDBLCLK:
+			StopClickTimer();
+			WSLstartDistribution(defaultdist);
 			break;
 		case WM_CONTEXTMENU:
 		case WM_RBUTTONDOWN:
@@ -1347,11 +1444,23 @@ void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 {
 	if (!KillTimer(nIDEvent))
 		return;
-	//	CDialogEx::OnTimer(nIDEvent);
 
-	RefreshWSLInfo();
+	if (nIDEvent == IDT_CLICK_TIMER)
+	{
+		m_clicks = 0;
+		m_visible = true;
+		this->ShowWindow(SW_RESTORE);
+		this->ShowWindow(SW_SHOW);
+		this->BringWindowToTop();
+		this->SetForegroundWindow();
+		return;
+	}
 
-	SetTimer(nIDEvent, TIMER_INTERVAL, NULL);
+	if (nIDEvent == IDT_MINUTE_TIMER)
+	{
+		RefreshWSLInfo();
+		SetTimer(nIDEvent, TIMER_INTERVAL, NULL);
+	}
 }
 
 // Initialize primary dialog -- this is basically our main()

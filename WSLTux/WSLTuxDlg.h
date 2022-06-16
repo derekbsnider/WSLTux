@@ -13,11 +13,13 @@ public:
 	CString regkey;
 	CString name;
 	CString packagefamilyname;
+	CString basepath;
 	std::wstring wsname;
 	DWORD version;
 	DWORD state;
 	DWORD flags;
 	DWORD uid;
+	bool running;
 	std::vector<DWORD> pids;
 	void clear() { pids.clear(); }
 	wslDistribution()
@@ -26,10 +28,12 @@ public:
 		state = 0;
 		flags = 0;
 		uid = 0;
+		running = false;
 	}
 	wslDistribution(const wslDistribution& d)
 		: regkey(d.regkey), name(d.name), packagefamilyname(d.packagefamilyname),
-		  version(d.version), state(d.state), flags(d.flags), uid(d.uid)
+		  basepath(d.basepath), version(d.version), state(d.state),
+		  flags(d.flags), uid(d.uid), running(d.running)
 	{
 		wsname = name;
 	}
@@ -38,6 +42,7 @@ public:
 		state = 0;
 		flags = 0;
 		uid = 0;
+		running = false;
 		wsname = name;
 	}
 };
@@ -94,10 +99,12 @@ protected:
 	DECLARE_MESSAGE_MAP()
 public:
 	UINT_PTR m_minuteTimer = NULL;
+	UINT_PTR m_clickTimer = NULL;
 	CListCtrl m_WSLlistCtrl;
 	CString ProgramOutput;
 	CString lsxxDefaultDistribution;
 	DWORD 	lsxxDefaultVersion = 2;
+	DWORD	m_clicks = 0;
 	HANDLE m_hChildStd_OUT_Rd = 0;
 	HANDLE m_hChildStd_OUT_Wr = 0;
 	HANDLE m_hreadDataFromExtProgram = 0;
@@ -112,8 +119,11 @@ public:
 	void StopTimer();
 	void StartTimer();
 	void RestartTimer();
+	void StartClickTimer();
+	void StopClickTimer();
 	bool GetDistributionList();
 	bool GetDistributionStates();
+	bool GetDistributionProcs();
 	CString WSLstopDistribution(CString& distro);
 	CString WSLstartDistribution(CString& distro);
 	static BOOL CALLBACK searcher(HWND hWnd, LPARAM lParam);
