@@ -38,16 +38,6 @@ WSLInfo* _wslinfo = NULL;
 #define new DEBUG_NEW
 #endif
 
-#define UWM_TRAY_ID			(WM_USER + 0x2)
-#define UWM_TRAY_MESSAGE	(WM_USER + 0x100)
-#define IDT_MINUTE_TIMER	(WM_USER + 0x200)
-#define IDT_CLICK_TIMER		(WM_USER + 0x201)
-
-#define TIMER_INTERVAL 10000
-#define CLICK_INTERVAL 250
-#define MAX_KEY_LENGTH 256
-#define MAX_VALUE_NAME 16383
-
 static const UINT UWM_ARE_YOU_ME = ::RegisterWindowMessage(_T("UWM_ARE_YOU_ME"));
 
 // CAboutDlg dialog used for App About
@@ -289,7 +279,7 @@ HRESULT CWSLTuxDlg::RunExternalProgram(CString cmd)
 	}
 
 	CloseHandle(m_hChildStd_OUT_Rd);
-	StartTimer();
+	StartTimer(1000);
 
 	return S_OK;
 }
@@ -399,7 +389,7 @@ DWORD WINAPI WSLstart(LPVOID lpParam)
 	return 0;
 }
 
-
+#if USE_WSLLAUNCHINTERACTIVE
 // Start a distribution using WSL.EXE, this should bring up a terminal window
 CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 {
@@ -417,15 +407,8 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 	}
 
 	for (dist = 0; dist < wslinfo.distributions.size(); ++dist)
-	{
 		if (wslinfo.distributions[dist].name == distro)
 			break;
-		if (!distro.Compare(L"__default__") && !lsxxDefaultDistribution.Compare(wslinfo.distributions[dist].regkey))
-		{
-			distro = wslinfo.distributions[dist].name;
-			break;
-		}
-	}
 
 	if ( dist >= wslinfo.distributions.size() )
 	{
@@ -436,20 +419,24 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 	}
 
 	tid = CreateThread(NULL, 0, WSLstart, (LPVOID)dist, 0, &dwTid);
-	StartTimer();
+	Sleep(100); // give the thread time to access wslinfo before unlocking
 	wslinfo.unlock();
 
 	if (!tid)
 	{
 		ret.Format(_T("Distribution '%s' CreateThread failed!"), distro.GetString());
+		StartTimer();
 		return ret;
 	}
 
 	if (hin == S_OK)
 	{
 		ret.Format(_T("Distribution '%s' started."), distro.GetString());
+		StartTimer(1000);  // refresh sooner
 		return ret;
 	}
+
+	StartTimer();
 
 	ret.Format(_T("Distribution '%s' failed to start: "), distro.GetString());
 	switch (hin)
@@ -491,8 +478,7 @@ CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 
 	return ret;
 }
-
-#if 0
+#else
 // Start a distribution using WSL.EXE, this should bring up a terminal window
 CString CWSLTuxDlg::WSLstartDistribution(CString& distro)
 {
@@ -606,7 +592,10 @@ void CWSLTuxDlg::PopulateWSLlist()
 	{
 		// set * if we match default distribution
 		if (!lsxxDefaultDistribution.Compare(wdi->regkey))
+		{
 			cstr = _T("*");
+			DefaultDistribution = wdi->name;
+		}
 		else
 			cstr = _T("");
 		nIndex = m_WSLlistCtrl.InsertItem(i, cstr);
@@ -638,9 +627,9 @@ void CWSLTuxDlg::StopTimer()
 }
 
 
-void CWSLTuxDlg::StartTimer()
+void CWSLTuxDlg::StartTimer(UINT interval)
 {
-	m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, TIMER_INTERVAL, NULL);
+	m_minuteTimer = SetTimer(IDT_MINUTE_TIMER, interval, NULL);
 }
 
 
@@ -1318,7 +1307,6 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 
 	UINT uMsg = (UINT)lParam;
 	const int IDM_EXIT = 100;
-	CString defaultdist = L"__default__";
 
 	switch (uMsg)
 	{
@@ -1329,7 +1317,7 @@ LRESULT CWSLTuxDlg::OnTrayNotify(WPARAM wParam, LPARAM lParam)
 			break;
 		case WM_LBUTTONDBLCLK:
 			StopClickTimer();
-			WSLstartDistribution(defaultdist);
+			WSLstartDistribution(DefaultDistribution);
 			break;
 		case WM_CONTEXTMENU:
 		case WM_RBUTTONDOWN:

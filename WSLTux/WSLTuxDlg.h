@@ -7,6 +7,16 @@
 #include <vector>
 #include <string>
 
+#define UWM_TRAY_ID			(WM_USER + 0x2)
+#define UWM_TRAY_MESSAGE	(WM_USER + 0x100)
+#define IDT_MINUTE_TIMER	(WM_USER + 0x200)
+#define IDT_CLICK_TIMER		(WM_USER + 0x201)
+
+#define TIMER_INTERVAL 3000
+#define CLICK_INTERVAL 250
+#define MAX_KEY_LENGTH 256
+#define MAX_VALUE_NAME 16383
+
 class wslDistribution
 {
 public:
@@ -103,6 +113,7 @@ public:
 	CListCtrl m_WSLlistCtrl;
 	CString ProgramOutput;
 	CString lsxxDefaultDistribution;
+	CString DefaultDistribution;
 	DWORD 	lsxxDefaultVersion = 2;
 	DWORD	m_clicks = 0;
 	HANDLE m_hChildStd_OUT_Rd = 0;
@@ -117,7 +128,7 @@ public:
 	void RemIconFromSysTray();
 	void Shutdown();
 	void StopTimer();
-	void StartTimer();
+	void StartTimer(UINT interval=TIMER_INTERVAL);
 	void RestartTimer();
 	void StartClickTimer();
 	void StopClickTimer();
