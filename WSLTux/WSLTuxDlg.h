@@ -12,7 +12,7 @@
 #define IDT_MINUTE_TIMER	(WM_USER + 0x200)
 #define IDT_CLICK_TIMER		(WM_USER + 0x201)
 
-#define TIMER_INTERVAL 3000
+#define TIMER_INTERVAL 2000
 #define CLICK_INTERVAL 250
 #define MAX_KEY_LENGTH 256
 #define MAX_VALUE_NAME 16383
@@ -135,6 +135,8 @@ public:
 	bool GetDistributionList();
 	bool GetDistributionStates();
 	bool GetDistributionProcs();
+	void ShowMyWindow();
+	void HideMyWindow();
 	CString WSLstopDistribution(CString& distro);
 	CString WSLstartDistribution(CString& distro);
 	static BOOL CALLBACK searcher(HWND hWnd, LPARAM lParam);
@@ -149,4 +151,5 @@ public:
 	afx_msg void OnWindowPosChanging(WINDOWPOS* lpwndpos);
 	afx_msg LRESULT OnTrayNotify(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnAreYouMe(WPARAM, LPARAM);
+	afx_msg void OnEndSession(BOOL bEnding);
 };

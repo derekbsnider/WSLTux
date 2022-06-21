@@ -114,6 +114,7 @@ BEGIN_MESSAGE_MAP(CWSLTuxDlg, CDialogEx)
 	ON_WM_TIMER()
 	ON_WM_WINDOWPOSCHANGING()
 	ON_REGISTERED_MESSAGE(UWM_ARE_YOU_ME, &CWSLTuxDlg::OnAreYouMe)
+	ON_WM_ENDSESSION()
 END_MESSAGE_MAP()
 #pragma warning( pop )
 
@@ -642,20 +643,26 @@ void CWSLTuxDlg::RestartTimer()
 void CWSLTuxDlg::StartClickTimer()
 {
 	m_clickTimer = SetTimer(IDT_CLICK_TIMER, CLICK_INTERVAL, NULL);
+#ifdef _DEBUG
 	OutputDebugString(L"StartClickTimer\n");
+#endif
 }
 
 void CWSLTuxDlg::StopClickTimer()
 {
 	if (m_clickTimer)
 	{
+#ifdef _DEBUG
 		OutputDebugString(L"StopClickTimer -- killing timer\n");
+#endif
 		KillTimer(m_clickTimer);
 	}
+#ifdef _DEBUG
 	else
 	{
 		OutputDebugString(L"StopClickTimer\n");
 	}
+#endif
 	m_clicks = 0;
 }
 
@@ -790,6 +797,7 @@ public:
 };
 
 // Retrieve the WSL (lxss) distributions from the Windows Registry
+// (Registry lookup functions appear to be fast and efficient)
 bool CWSLTuxDlg::GetDistributionList()
 {
 	CString LxssKey = _T("Software\\Microsoft\\Windows\\CurrentVersion\\Lxss");
@@ -898,6 +906,8 @@ bool CWSLTuxDlg::GetDistributionList()
 }
 
 // check if a process is wslhost.exe, and add the full commandline to wslhosts
+// this operation takes the most resources of all, so we only want to perform
+// this every few seconds
 int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 {
 	TCHAR szProcessName[MAX_PATH] = { 0 };
@@ -938,7 +948,7 @@ int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 		CloseHandle(hProcess);
 		return 0;
 	}
-#ifdef _DEBUG
+#ifdef _DEBUGXX
 	OutputDebugString(_T("Got wslhost.exe!\n"));
 #endif
 	PROCESS_BASIC_INFORMATION pbi;
@@ -961,7 +971,8 @@ int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 	ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(PEB), (SIZE_T*)&dwSize);
 	ReadProcessMemory(hProcess, peb.ProcessParameters, &upp, sizeof(RTL_USER_PROCESS_PARAMETERS), (SIZE_T*)&dwSize);
 
-	WCHAR* CmdLine = (WCHAR*)malloc(upp.CommandLine.Length * 2);
+	SIZE_T cmdbuflen = upp.CommandLine.Length;
+	WCHAR* CmdLine = (WCHAR*)malloc(cmdbuflen);
 
 	if (!CmdLine)
 	{
@@ -969,9 +980,14 @@ int AddWSLhost(DWORD processID, std::map<DWORD, CString>& wslhosts)
 		return -1;
 	}
 
-	ReadProcessMemory(hProcess, upp.CommandLine.Buffer, CmdLine, upp.CommandLine.Length, (SIZE_T*)&dwSize);
+	if (!ReadProcessMemory(hProcess, upp.CommandLine.Buffer, CmdLine, upp.CommandLine.Length, NULL))
+	{
+		free(CmdLine);
+		CloseHandle(hProcess);
+		return -1;
+	}
 
-	std::wstring wcmd(CmdLine);
+	std::wstring wcmd(CmdLine, cmdbuflen / 2);
 	//std::wstring_convert<ccvt> wstrtostr;
 	//std::string cmd = wstrtostr.to_bytes(wcmd);
 	CString cmd(wcmd.c_str());
@@ -1276,7 +1292,9 @@ void CWSLTuxDlg::RefreshWSLInfo()
 
 	if (GetWSLInfo())
 	{
-		PopulateWSLlist();
+		// only repopulate the dialog list if it is visible
+		if ( m_visible )
+			PopulateWSLlist();
 		if (wslinfo.dists_running != prev_running)
 			UpdateSysTrayIcon();
 	}
@@ -1288,15 +1306,14 @@ void CWSLTuxDlg::RefreshWSLInfo()
 // Refresh button
 void CWSLTuxDlg::OnBnClickedOk()
 {
+	m_visible = true;
 	RefreshWSLInfo();
 }
 
 // Cancel button
 void CWSLTuxDlg::OnBnClickedCancel()
 {
-	// just hide the window
-	this->ShowWindow(SW_HIDE);
-//	CDialogEx::OnCancel(); <-- this would terminate the app
+	HideMyWindow();
 }
 
 // Handle events from interacting with the system tray icon
@@ -1354,8 +1371,7 @@ void CWSLTuxDlg::Shutdown()
 // Clicking the X in corner just hides the window
 void CWSLTuxDlg::OnClose()
 {
-	// TODO: Add your message handler code here and/or call default
-	this->ShowWindow(SW_HIDE);
+	HideMyWindow();
 	CDialogEx::OnClose();
 }
 
@@ -1427,6 +1443,22 @@ void CWSLTuxDlg::OnBnClickedStart()
 }
 
 
+void CWSLTuxDlg::ShowMyWindow()
+{
+	m_visible = true;
+	this->ShowWindow(SW_RESTORE);
+	this->ShowWindow(SW_SHOW);
+	this->BringWindowToTop();
+	this->SetForegroundWindow();
+}
+
+void CWSLTuxDlg::HideMyWindow()
+{
+	m_visible = false;
+	this->ShowWindow(SW_HIDE);
+}
+
+
 // timer event to refresh the app information
 void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 {
@@ -1436,11 +1468,7 @@ void CWSLTuxDlg::OnTimer(UINT_PTR nIDEvent)
 	if (nIDEvent == IDT_CLICK_TIMER)
 	{
 		m_clicks = 0;
-		m_visible = true;
-		this->ShowWindow(SW_RESTORE);
-		this->ShowWindow(SW_SHOW);
-		this->BringWindowToTop();
-		this->SetForegroundWindow();
+		ShowMyWindow();
 		return;
 	}
 
@@ -1541,4 +1569,14 @@ void CWSLTuxDlg::OnWindowPosChanging(WINDOWPOS* lpwndpos)
 	if (!m_visible)
 		lpwndpos->flags &= ~SWP_SHOWWINDOW;
 	CDialogEx::OnWindowPosChanging(lpwndpos);
+}
+
+
+void CWSLTuxDlg::OnEndSession(BOOL bEnding)
+{
+#ifdef _DEBUG
+	OutputDebugString(_T("CWSLTuxDlg::OnEndSession() shutting down\n"));
+#endif
+	CDialogEx::OnEndSession(bEnding);
+	ExitProcess(0);
 }
